@@ -1,0 +1,34 @@
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+secrets/
+*.json.key
+gcp-key.json
+
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+# Only the repo-root .idea/ (stale, pre-dates /android existing). The
+# android/.idea/ project config is intentionally tracked - it has its own
+# nested .gitignore controlling what's shared vs. personal.
+/.idea/
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# Ktor / Kotlin / Gradle (server)
+server/build/
+server/.gradle/
+server/out/
+out/
+*.class
+*.log
+
+# OS
+Thumbs.db

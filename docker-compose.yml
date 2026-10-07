@@ -1,0 +1,10 @@
+services:
+  server:
+    build:
+      context: ./server
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./server/secrets:/app/secrets:ro
