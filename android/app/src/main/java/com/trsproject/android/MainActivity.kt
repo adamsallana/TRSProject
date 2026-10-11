@@ -7,10 +7,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import com.trsproject.android.ui.navigation.Screen
+import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.TranscriptionScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,29 +24,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             TRSProjectTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+                MainApp()
             }
         }
     }
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
+fun MainApp() {
+    var currentScreen by remember { mutableStateOf(Screen.AUTH) }
 
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    TRSProjectTheme {
-        Greeting("Android")
+    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+        when (currentScreen) {
+            Screen.AUTH -> AuthScreen(
+                modifier = Modifier.padding(innerPadding),
+                onSignInSuccess = { currentScreen = Screen.TRANSCRIPTION }
+            )
+            Screen.TRANSCRIPTION -> TranscriptionScreen(
+                modifier = Modifier.padding(innerPadding),
+                onSignOut = { currentScreen = Screen.AUTH }
+            )
+        }
     }
 }
