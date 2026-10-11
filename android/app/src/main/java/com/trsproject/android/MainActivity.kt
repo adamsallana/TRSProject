@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
 
@@ -38,11 +39,19 @@ fun MainApp() {
         when (currentScreen) {
             Screen.AUTH -> AuthScreen(
                 modifier = Modifier.padding(innerPadding),
-                onSignInSuccess = { currentScreen = Screen.TRANSCRIPTION }
+                onSignInSuccess = { currentScreen = Screen.TRANSCRIPTION },
+                onSignInError = { currentScreen = Screen.ERROR }
             )
             Screen.TRANSCRIPTION -> TranscriptionScreen(
                 modifier = Modifier.padding(innerPadding),
                 onSignOut = { currentScreen = Screen.AUTH }
+            )
+            Screen.ERROR -> ErrorScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBackToLogin = { currentScreen = Screen.AUTH },
+                onSignUpClick = {
+                    currentScreen = Screen.AUTH
+                }
             )
         }
     }
