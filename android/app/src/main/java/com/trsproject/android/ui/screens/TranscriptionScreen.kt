@@ -58,20 +58,23 @@ data class CaptionMessage(
 @Composable
 fun TranscriptionScreen(
     modifier: Modifier = Modifier,
-    onSignOut: () -> Unit = {}
+    contactName: String? = null,
+    onBack: () -> Unit = {}
 ) {
     var onCall by remember { mutableStateOf(true) }
     var isMuted by remember { mutableStateOf(false) }
     var isSpeakerOn by remember { mutableStateOf(false) }
 
+    val displayName = contactName ?: "Alice Smith"
+
     // Master sequence of call events & captions
-    val callSequence = remember {
+    val callSequence = remember(displayName) {
         listOf(
             CaptionMessage(1, "Me", "Connecting to ASR...", isMe = true),
-            CaptionMessage(2, "Me", "Dialing Alice Smith...", isMe = true),
-            CaptionMessage(3, "Alice Smith", "Hello! Can you hear me clearly?", isMe = false),
+            CaptionMessage(2, "Me", "Dialing $displayName...", isMe = true),
+            CaptionMessage(3, displayName, "Hello! Can you hear me clearly?", isMe = false),
             CaptionMessage(4, "Me", "Yes, I can hear you loud and clear. How's it going?", isMe = true),
-            CaptionMessage(5, "Alice Smith", "Everything is great! Just testing out this live transcription feature.", isMe = false),
+            CaptionMessage(5, displayName, "Everything is great! Just testing out this live transcription feature.", isMe = false),
             CaptionMessage(6, "Me", "It looks amazing and updates in real-time like text messages.", isMe = true)
         )
     }
@@ -88,8 +91,8 @@ fun TranscriptionScreen(
                 // Quick delays for connection/dialing status, then 5s between speech
                 val delayTime = when (index) {
                     0 -> 1000L // "Connecting to ASR..."
-                    1 -> 2000L // "Dialing Alice Smith..."
-                    2 -> 3000L // First response from Alice
+                    1 -> 2000L // "Dialing..."
+                    2 -> 3000L // First response
                     else -> 5000L // Conversation flow
                 }
                 delay(delayTime)
@@ -115,7 +118,7 @@ fun TranscriptionScreen(
     ) {
         // Top Header
         Text(
-            text = if (onCall) "Alice Smith" else "No Active Call",
+            text = if (onCall) displayName else "No Active Call",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold
         )
@@ -138,13 +141,13 @@ fun TranscriptionScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Transcription Page Placeholder",
+                    text = "Call Ended",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                Button(onClick = { onCall = true }) {
-                    Text("Start Call with Alice Smith")
+                Button(onClick = onBack) {
+                    Text("Back to Home")
                 }
             }
         } else {
