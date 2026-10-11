@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
 
@@ -33,16 +34,28 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp() {
     var currentScreen by remember { mutableStateOf(Screen.AUTH) }
+    var selectedContactName by remember { mutableStateOf<String?>(null) }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         when (currentScreen) {
             Screen.AUTH -> AuthScreen(
                 modifier = Modifier.padding(innerPadding),
-                onSignInSuccess = { currentScreen = Screen.TRANSCRIPTION }
+                onSignInSuccess = { currentScreen = Screen.HOME }
+            )
+            Screen.HOME -> HomeScreen(
+                modifier = Modifier.padding(innerPadding),
+                onCallClick = { contact ->
+                    selectedContactName = contact.name
+                    currentScreen = Screen.TRANSCRIPTION
+                },
+                onSignOut = {
+                    currentScreen = Screen.AUTH
+                }
             )
             Screen.TRANSCRIPTION -> TranscriptionScreen(
+                contactName = selectedContactName,
                 modifier = Modifier.padding(innerPadding),
-                onSignOut = { currentScreen = Screen.AUTH }
+                onBack = { currentScreen = Screen.HOME }
             )
         }
     }
