@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ClaudeCodeEditorTabs">
+    <option name="activeSessionId" value="5191e402-45c0-437b-ae28-ddd309eabb53" />
+    <option name="openSessionIds">
+      <list>
+        <option value="5191e402-45c0-437b-ae28-ddd309eabb53" />
+      </list>
+    </option>
+    <option name="sessionPaths">
+      <map>
+        <entry key="5191e402-45c0-437b-ae28-ddd309eabb53" value="/sessions/19caba7f-8130-4ae8-aad3-1c63482b0c75" />
+      </map>
+    </option>
+    <option name="sessionTitles">
+      <map>
+        <entry key="5191e402-45c0-437b-ae28-ddd309eabb53" value="@src/main/kotlin/com/trsproject/server/Application" />
+      </map>
+    </option>
+  </component>
+</project>

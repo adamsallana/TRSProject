@@ -1,20 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClaudeCodeEditorTabs">
-    <option name="activeSessionId" value="39d19ee0-1b72-4a3c-9a3a-88fe29264147" />
+    <option name="activeSessionId" value="a8222a1a-d346-4c36-882f-ad5219bd09de" />
     <option name="openSessionIds">
       <list>
         <option value="39d19ee0-1b72-4a3c-9a3a-88fe29264147" />
+        <option value="29c5bf5d-d034-443e-b9b5-99a23ec8c844" />
+        <option value="a8222a1a-d346-4c36-882f-ad5219bd09de" />
       </list>
     </option>
     <option name="sessionPaths">
       <map>
+        <entry key="29c5bf5d-d034-443e-b9b5-99a23ec8c844" value="/sessions/4d5665c1-1c16-4813-8470-2a1f572a549c" />
         <entry key="39d19ee0-1b72-4a3c-9a3a-88fe29264147" value="/sessions/2ad840ce-c304-4607-82b1-3a09a81456bf" />
+        <entry key="a8222a1a-d346-4c36-882f-ad5219bd09de" value="/sessions/8134f5f5-77af-4185-82a7-9014ecd989a4" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
+        <entry key="29c5bf5d-d034-443e-b9b5-99a23ec8c844" value="change the active call screen. the name (ex alice" />
         <entry key="39d19ee0-1b72-4a3c-9a3a-88fe29264147" value="$PROJECT_DIR$/../" />
+        <entry key="a8222a1a-d346-4c36-882f-ad5219bd09de" value="based on this, draft 3 iterations of how to comple" />
       </map>
     </option>
   </component>
