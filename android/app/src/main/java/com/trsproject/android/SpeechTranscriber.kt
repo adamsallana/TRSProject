@@ -3,14 +3,16 @@ package com.trsproject.android
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 
 /**
- * Thin wrapper around Android's built-in SpeechRecognizer. One call to
- * startListening() captures a single utterance: the recognizer stops on its
- * own after a pause in speech and delivers a final result.
+ * Thin wrapper around Android's built-in SpeechRecognizer. The platform
+ * recognizer ends each session after a pause in speech, so we restart it
+ * after every result until stop() is called, giving continuous captioning.
  *
  * SpeechRecognizer must be created and used on the main thread.
  */
@@ -21,6 +23,11 @@ class SpeechTranscriber(
     private val onStatus: (String) -> Unit,
     private val onStopped: () -> Unit,
 ) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // True from start() until the user calls stop(); drives the restart loop.
+    private var active = false
+
     private val recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
         setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = onStatus("Listening…")
@@ -33,13 +40,19 @@ class SpeechTranscriber(
 
             override fun onResults(results: Bundle?) {
                 results.firstResult()?.let(onFinal)
-                onStatus("Done")
-                onStopped()
+                if (active) restart() else finish("Stopped")
             }
 
             override fun onError(error: Int) {
-                onStatus("Error: ${describeError(error)}")
-                onStopped()
+                when {
+                    !active -> finish("Stopped")
+                    // Silence or unintelligible audio just ends a session; keep going.
+                    error in RECOVERABLE_ERRORS -> restart()
+                    else -> {
+                        active = false
+                        finish("Error: ${describeError(error)}")
+                    }
+                }
             }
 
             override fun onRmsChanged(rmsdB: Float) = Unit
@@ -54,11 +67,37 @@ class SpeechTranscriber(
     }
 
     /** Caller must have RECORD_AUDIO granted before calling this. */
-    fun start() = recognizer.startListening(intent)
+    fun start() {
+        if (active) return
+        active = true
+        recognizer.startListening(intent)
+    }
 
-    fun stop() = recognizer.stopListening()
+    /** Ends the session; the last words spoken are still delivered via onFinal. */
+    fun stop() {
+        active = false
+        mainHandler.removeCallbacksAndMessages(null)
+        recognizer.stopListening()
+    }
 
-    fun destroy() = recognizer.destroy()
+    fun destroy() {
+        active = false
+        mainHandler.removeCallbacksAndMessages(null)
+        recognizer.destroy()
+    }
+
+    // Restarting from inside a listener callback can hit ERROR_RECOGNIZER_BUSY,
+    // so give the recognizer a moment to tear down the previous session.
+    private fun restart() {
+        mainHandler.postDelayed({
+            if (active) recognizer.startListening(intent)
+        }, RESTART_DELAY_MS)
+    }
+
+    private fun finish(status: String) {
+        onStatus(status)
+        onStopped()
+    }
 
     private fun Bundle?.firstResult(): String? =
         this?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
@@ -74,6 +113,13 @@ class SpeechTranscriber(
     }
 
     companion object {
+        private const val RESTART_DELAY_MS = 100L
+        private val RECOVERABLE_ERRORS = setOf(
+            SpeechRecognizer.ERROR_NO_MATCH,
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+        )
+
         fun isAvailable(context: Context) = SpeechRecognizer.isRecognitionAvailable(context)
     }
 }

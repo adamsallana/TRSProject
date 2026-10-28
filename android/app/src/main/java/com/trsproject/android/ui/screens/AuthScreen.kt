@@ -32,7 +32,8 @@ import com.trsproject.android.ui.theme.TRSProjectTheme
 @Composable
 fun AuthScreen(
     modifier: Modifier = Modifier,
-    onSignInSuccess: () -> Unit = {}
+    onSignInSuccess: () -> Unit = {},
+    onSignInError: () -> Unit = {}
 ) {
     var isSignUp by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("") }
@@ -41,6 +42,16 @@ fun AuthScreen(
     var name by remember { mutableStateOf("") }
 
     val context = LocalContext.current
+
+    fun processAuthentication() {
+        if (DemoErrorEvaluator.isWrongCredentials(email, password)) {
+            onSignInError()
+        } else {
+            val action = if (isSignUp) "Signed Up" else "Signed In"
+            Toast.makeText(context, "$action successfully", Toast.LENGTH_SHORT).show()
+            onSignInSuccess()
+        }
+    }
 
     Column(
         modifier = modifier
@@ -113,11 +124,7 @@ fun AuthScreen(
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
-            onClick = {
-                val action = if (isSignUp) "Signed Up" else "Signed In"
-                Toast.makeText(context, "$action successfully", Toast.LENGTH_SHORT).show()
-                onSignInSuccess()
-            },
+            onClick = { processAuthentication() },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(50.dp)
