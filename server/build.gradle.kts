@@ -20,6 +20,10 @@ dependencies {
     implementation("io.ktor:ktor-server-websockets")
     implementation("io.ktor:ktor-server-content-negotiation")
     implementation("io.ktor:ktor-serialization-kotlinx-json")
+
+    implementation("io.ktor:ktor-client-core")
+    implementation("io.ktor:ktor-client-cio")
+
     implementation("ch.qos.logback:logback-classic:1.5.12")
 
     // Story 1: forwards streamed audio to Google Speech-to-Text
