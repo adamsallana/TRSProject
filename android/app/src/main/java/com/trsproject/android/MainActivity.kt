@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.Contact
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
@@ -36,6 +37,7 @@ class MainActivity : ComponentActivity() {
 fun MainApp() {
     var currentScreen by remember { mutableStateOf(Screen.AUTH) }
     var selectedContactName by remember { mutableStateOf<String?>(null) }
+    var selectedContactPhoneNumber by remember { mutableStateOf<String?>(null) }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         when (currentScreen) {
@@ -49,6 +51,7 @@ fun MainApp() {
                 modifier = Modifier.padding(innerPadding),
                 onCallClick = { contact ->
                     selectedContactName = contact.name
+                    selectedContactPhoneNumber = contact.phoneNumber
                     currentScreen = Screen.TRANSCRIPTION
                 },
                 onSignOut = {
@@ -58,6 +61,7 @@ fun MainApp() {
 
             Screen.TRANSCRIPTION -> TranscriptionScreen(
                 contactName = selectedContactName,
+                contactPhoneNumber = selectedContactPhoneNumber,
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.HOME }
             )

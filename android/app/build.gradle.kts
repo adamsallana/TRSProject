@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -18,8 +19,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Emulator alias for the host machine's localhost; overridden for release below.
-        buildConfigField("String", "SERVER_WS_URL", "\"ws://10.0.2.2:8080/transcribe\"")
+        // Emulator alias for the host machine's localhost (via adb reverse or 10.0.2.2); overridden for release below.
+        buildConfigField("String", "SERVER_WS_URL", "\"ws://127.0.0.1:8080/transcribe\"")
     }
 
     buildTypes {
@@ -35,6 +36,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = "11"
     }
     buildFeatures {
         compose = true
@@ -62,3 +66,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+tasks.register("prepareKotlinBuildScriptModel") {}

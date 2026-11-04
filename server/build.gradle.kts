@@ -25,6 +25,9 @@ dependencies {
     // Story 1: forwards streamed audio to Google Speech-to-Text
     implementation("com.google.cloud:google-cloud-speech:4.51.0")
 
+    // Twilio Java Helper Library for placing calls via REST API
+    implementation("com.twilio.sdk:twilio:10.1.0")
+
     testImplementation("io.ktor:ktor-server-test-host")
     testImplementation(kotlin("test"))
 }

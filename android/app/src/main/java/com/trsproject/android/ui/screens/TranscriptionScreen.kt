@@ -44,8 +44,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
-import kotlinx.coroutines.delay
 
 // Data model for a caption line
 data class CaptionMessage(
@@ -59,49 +59,34 @@ data class CaptionMessage(
 fun TranscriptionScreen(
     modifier: Modifier = Modifier,
     contactName: String? = null,
+    contactPhoneNumber: String? = null,
     onBack: () -> Unit = {}
 ) {
     var onCall by remember { mutableStateOf(true) }
     var isMuted by remember { mutableStateOf(false) }
     var isSpeakerOn by remember { mutableStateOf(false) }
 
-    val displayName = contactName ?: "Alice Smith"
+    var twilioStatus by remember { mutableStateOf<String?>(null) }
+    var callSid by remember { mutableStateOf<String?>(null) }
 
-    // Master sequence of call events & captions
-    val callSequence = remember(displayName) {
-        listOf(
-            CaptionMessage(1, "Me", "Connecting to ASR...", isMe = true),
-            CaptionMessage(2, "Me", "Dialing $displayName...", isMe = true),
-            CaptionMessage(3, displayName, "Hello! Can you hear me clearly?", isMe = false),
-            CaptionMessage(4, "Me", "Yes, I can hear you loud and clear. How's it going?", isMe = true),
-            CaptionMessage(5, displayName, "Everything is great! Just testing out this live transcription feature.", isMe = false),
-            CaptionMessage(6, "Me", "It looks amazing and updates in real-time like text messages.", isMe = true)
-        )
-    }
+    val displayName = contactName ?: "Contact"
+    val phoneNumber = contactPhoneNumber ?: "+17818690609"
+    val callService = remember { CallService() }
 
-    // State holding only the messages that have appeared so far
-    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
-    val listState = rememberLazyListState()
-
-    // Simulates incoming speech line-by-line over time
-    LaunchedEffect(onCall) {
-        if (onCall) {
-            visibleCaptions = emptyList()
-            callSequence.forEachIndexed { index, caption ->
-                // Quick delays for connection/dialing status, then 5s between speech
-                val delayTime = when (index) {
-                    0 -> 1000L // "Connecting to ASR..."
-                    1 -> 2000L // "Dialing..."
-                    2 -> 3000L // First response
-                    else -> 5000L // Conversation flow
-                }
-                delay(delayTime)
-                visibleCaptions = visibleCaptions + caption
-            }
+    // Initiate Twilio call via backend when screen is loaded
+    LaunchedEffect(phoneNumber) {
+        twilioStatus = "Initiating Twilio call to $phoneNumber..."
+        val result = callService.makeCall(toPhoneNumber = phoneNumber)
+        if (result.success) {
+            callSid = result.callSid
+            twilioStatus = "Twilio Call Active (SID: ${result.callSid})"
         } else {
-            visibleCaptions = emptyList()
+            twilioStatus = "Twilio Status: ${result.errorMessage ?: "Disconnected"}"
         }
     }
+
+    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
+    val listState = rememberLazyListState()
 
     // Auto-scroll to the newest message when it appears
     LaunchedEffect(visibleCaptions.size) {
@@ -129,6 +114,15 @@ fun TranscriptionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        if (onCall && twilioStatus != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = twilioStatus!!,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
 
         if (!onCall) {
@@ -152,15 +146,30 @@ fun TranscriptionScreen(
             }
         } else {
             // Active Chat Transcriptions
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(visibleCaptions) { caption ->
-                    CaptionBubble(caption = caption)
+            if (visibleCaptions.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Call connected. Waiting for speech...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(visibleCaptions) { caption ->
+                        CaptionBubble(caption = caption)
+                    }
                 }
             }
 
