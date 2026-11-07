@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -53,6 +54,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     contacts: List<Contact> = sampleFavorites,
     onCallClick: (Contact) -> Unit = {},
+    onAccountClick: () -> Unit = {},
     onSignOut: () -> Unit = {}
 ) {
     Scaffold(
@@ -60,6 +62,12 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("Favorite Contacts") },
                 actions = {
+                    IconButton(onClick = onAccountClick) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Account Settings"
+                        )
+                    }
                     TextButton(onClick = onSignOut) {
                         Text("Sign Out")
                     }

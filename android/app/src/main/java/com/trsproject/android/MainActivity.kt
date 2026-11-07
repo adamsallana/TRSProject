@@ -14,9 +14,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.ui.navigation.Screen
+import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.CaptionSettingsScreen
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
+import com.trsproject.android.ui.screens.NotificationsScreen
+import com.trsproject.android.ui.screens.PersonalInfoScreen
+import com.trsproject.android.ui.screens.SecuritySettingsScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
 
@@ -50,6 +55,9 @@ fun MainApp() {
                     selectedContactName = contact.name
                     currentScreen = Screen.TRANSCRIPTION
                 },
+                onAccountClick = {
+                    currentScreen = Screen.ACCOUNT
+                },
                 onSignOut = {
                     currentScreen = Screen.AUTH
                 }
@@ -58,6 +66,31 @@ fun MainApp() {
                 contactName = selectedContactName,
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.HOME }
+            )
+            Screen.ACCOUNT -> AccountScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.HOME },
+                onSignOut = { currentScreen = Screen.AUTH },
+                onNavigateToPersonalInfo = { currentScreen = Screen.PERSONAL_INFO },
+                onNavigateToCaptionSettings = { currentScreen = Screen.CAPTION_SETTINGS },
+                onNavigateToNotifications = { currentScreen = Screen.NOTIFICATIONS },
+                onNavigateToSecurity = { currentScreen = Screen.SECURITY_SETTINGS }
+            )
+            Screen.PERSONAL_INFO -> PersonalInfoScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.ACCOUNT }
+            )
+            Screen.CAPTION_SETTINGS -> CaptionSettingsScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.ACCOUNT }
+            )
+            Screen.NOTIFICATIONS -> NotificationsScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.ACCOUNT }
+            )
+            Screen.SECURITY_SETTINGS -> SecuritySettingsScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.ACCOUNT }
             )
             Screen.ERROR -> ErrorScreen(
                 modifier = Modifier.padding(innerPadding),
