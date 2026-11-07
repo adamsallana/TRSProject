@@ -1,6 +1,7 @@
 package com.trsproject.android.network
 
 import com.trsproject.android.BuildConfig
+import com.trsproject.android.ui.screens.CaptionMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -87,6 +88,52 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
             success = false,
             errorMessage = lastError
         )
+    }
+
+    fun connectTranscriptionWebSocket(
+        contactName: String,
+        onTranscriptReceived: (com.trsproject.android.ui.screens.CaptionMessage) -> Unit
+    ): okhttp3.WebSocket {
+        val wsBaseUrl = if (baseUrl.startsWith("https://")) {
+            baseUrl.replace("https://", "wss://")
+        } else {
+            baseUrl.replace("http://", "ws://")
+        }
+        val encodedContact = java.net.URLEncoder.encode(contactName, "UTF-8")
+        val wsUrl = "$wsBaseUrl/transcribe?contact=$encodedContact"
+
+        val request = Request.Builder().url(wsUrl).build()
+        return client.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                try {
+                    val json = JSONObject(text)
+                    val id = json.optInt("id", System.currentTimeMillis().toInt())
+                    val senderName = json.optString("senderName", contactName)
+                    val transcriptText = json.optString("text", "")
+                    val isMe = json.optBoolean("isMe", false)
+
+                    if (transcriptText.isNotBlank()) {
+                        onTranscriptReceived(
+                            com.trsproject.android.ui.screens.CaptionMessage(
+                                id = id,
+                                senderName = senderName,
+                                text = transcriptText,
+                                isMe = isMe
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    onTranscriptReceived(
+                        com.trsproject.android.ui.screens.CaptionMessage(
+                            id = System.currentTimeMillis().toInt(),
+                            senderName = contactName,
+                            text = text,
+                            isMe = false
+                        )
+                    )
+                }
+            }
+        })
     }
 
     companion object {

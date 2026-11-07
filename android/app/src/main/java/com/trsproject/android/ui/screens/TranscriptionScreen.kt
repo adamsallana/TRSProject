@@ -1,5 +1,14 @@
 package com.trsproject.android.ui.screens
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +41,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,9 +51,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 
@@ -65,6 +77,8 @@ fun TranscriptionScreen(
     var onCall by remember { mutableStateOf(true) }
     var isMuted by remember { mutableStateOf(false) }
     var isSpeakerOn by remember { mutableStateOf(false) }
+    var isEditingSpeech by remember { mutableStateOf(false) }
+    var inputText by remember { mutableStateOf("") }
 
     var twilioStatus by remember { mutableStateOf<String?>(null) }
     var callSid by remember { mutableStateOf<String?>(null) }
@@ -87,6 +101,126 @@ fun TranscriptionScreen(
 
     var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
     val listState = rememberLazyListState()
+    var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
+
+    val context = LocalContext.current
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasMicPermission = isGranted
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasMicPermission) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Android SpeechRecognizer for continuous caller speech transcription
+    DisposableEffect(onCall, isMuted, hasMicPermission) {
+        if (!onCall || isMuted || !hasMicPermission || !SpeechRecognizer.isRecognitionAvailable(context)) {
+            return@DisposableEffect onDispose {}
+        }
+
+        val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+
+        val listener = object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                android.util.Log.d("SpeechRecognizer", "Ready for speech")
+            }
+            override fun onBeginningOfSpeech() {
+                android.util.Log.d("SpeechRecognizer", "Beginning of speech detected")
+            }
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {
+                android.util.Log.d("SpeechRecognizer", "End of speech detected")
+            }
+            override fun onError(error: Int) {
+                android.util.Log.e("SpeechRecognizer", "Speech error code: $error")
+                if (onCall && !isMuted) {
+                    try {
+                        speechRecognizer.cancel()
+                        speechRecognizer.startListening(intent)
+                    } catch (e: Exception) {
+                        android.util.Log.e("SpeechRecognizer", "Failed to restart: ${e.message}")
+                    }
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val spokenText = matches?.firstOrNull()
+                android.util.Log.d("SpeechRecognizer", "Speech recognized on results: $spokenText")
+                if (!spokenText.isNullOrBlank()) {
+                    val myMessage = CaptionMessage(
+                        id = System.currentTimeMillis().toInt(),
+                        senderName = "Me",
+                        text = spokenText,
+                        isMe = true
+                    )
+                    visibleCaptions = visibleCaptions + myMessage
+                    webSocket?.send(spokenText)
+                }
+                if (onCall && !isMuted) {
+                    try {
+                        speechRecognizer.cancel()
+                        speechRecognizer.startListening(intent)
+                    } catch (e: Exception) {}
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val partialText = matches?.firstOrNull()
+                if (!partialText.isNullOrBlank()) {
+                    android.util.Log.d("SpeechRecognizer", "Partial speech: $partialText")
+                }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        }
+
+        speechRecognizer.setRecognitionListener(listener)
+        try {
+            speechRecognizer.startListening(intent)
+        } catch (e: Exception) {}
+
+        onDispose {
+            try {
+                speechRecognizer.stopListening()
+                speechRecognizer.destroy()
+            } catch (e: Exception) {}
+        }
+    }
+
+    // Connect WebSocket for live dual-sided transcription when call is active
+    LaunchedEffect(onCall, displayName) {
+        if (onCall) {
+            val socket = callService.connectTranscriptionWebSocket(displayName) { msg ->
+                visibleCaptions = visibleCaptions + msg
+            }
+            webSocket = socket
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                socket.close(1000, "Call Ended")
+                webSocket = null
+            }
+        }
+    }
 
     // Auto-scroll to the newest message when it appears
     LaunchedEffect(visibleCaptions.size) {
@@ -173,7 +307,47 @@ fun TranscriptionScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            if (isEditingSpeech) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Type speech to send...") },
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    IconButton(
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                val textToSend = inputText.trim()
+                                val myCaption = CaptionMessage(
+                                    id = System.currentTimeMillis().toInt(),
+                                    senderName = "Me",
+                                    text = textToSend,
+                                    isMe = true
+                                )
+                                visibleCaptions = visibleCaptions + myCaption
+                                webSocket?.send(textToSend)
+                                inputText = ""
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Send Speech",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             // In-Call Action Control Bar (Mute, Speaker, End Call, Edit, Dial)
             Row(
@@ -217,7 +391,8 @@ fun TranscriptionScreen(
                 CallActionButton(
                     icon = Icons.Default.Edit,
                     label = "Edit Speech",
-                    onClick = { /* Add edit action here */ }
+                    isActive = isEditingSpeech,
+                    onClick = { isEditingSpeech = !isEditingSpeech }
                 )
 
                 // 5. Keypad / Dial Button
