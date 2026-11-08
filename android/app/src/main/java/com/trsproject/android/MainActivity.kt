@@ -14,7 +14,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.ui.navigation.Screen
+import com.trsproject.android.ui.screens.AccountInfoScreen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.ContactsScreen
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
@@ -44,21 +46,34 @@ fun MainApp() {
                 onSignInSuccess = { currentScreen = Screen.HOME },
                 onSignInError = { currentScreen = Screen.ERROR }
             )
+
             Screen.HOME -> HomeScreen(
+                modifier = Modifier.padding(innerPadding),
+                onNavigateToContacts = { currentScreen = Screen.CONTACTS },
+                onNavigateToAccountInfo = { currentScreen = Screen.ACCOUNT },
+                onSignOut = { currentScreen = Screen.AUTH }
+            )
+
+            Screen.CONTACTS -> ContactsScreen(
                 modifier = Modifier.padding(innerPadding),
                 onCallClick = { contact ->
                     selectedContactName = contact.name
                     currentScreen = Screen.TRANSCRIPTION
                 },
-                onSignOut = {
-                    currentScreen = Screen.AUTH
-                }
+                onBack = { currentScreen = Screen.HOME }
             )
+
+            Screen.ACCOUNT -> AccountInfoScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.HOME }
+            )
+
             Screen.TRANSCRIPTION -> TranscriptionScreen(
                 contactName = selectedContactName,
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.HOME }
             )
+
             Screen.ERROR -> ErrorScreen(
                 modifier = Modifier.padding(innerPadding),
                 onBackToLogin = { currentScreen = Screen.AUTH },
