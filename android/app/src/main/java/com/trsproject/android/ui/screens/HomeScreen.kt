@@ -51,7 +51,7 @@ data class Contact(
 )
 
 val sampleFavorites = listOf(
-    Contact("1", "Contact", "+17818690609")
+    Contact("1", "Contact", "+18282751713")
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

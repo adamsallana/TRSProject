@@ -20,7 +20,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Emulator alias for the host machine's localhost (via adb reverse or 10.0.2.2); overridden for release below.
-        buildConfigField("String", "SERVER_WS_URL", "\"ws://127.0.0.1:8080/transcribe\"")
+        buildConfigField("String", "SERVER_WS_URL", "\"wss://trsproject.onrender.com/transcribe\"")
+
     }
 
     buildTypes {
