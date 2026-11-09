@@ -3,10 +3,6 @@ package com.trsproject.android.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -59,6 +55,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.trsproject.android.network.CallEvent
 import com.trsproject.android.network.CallService
+import com.trsproject.android.network.MicStreamStatus
+import com.trsproject.android.network.MicUnavailableException
+import com.trsproject.android.network.streamMicrophoneToCall
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -77,15 +76,11 @@ data class CaptionMessage(
 )
 
 /**
- * Adds [msg] to [captions]. Messages from the other party with an id already shown replace that
- * bubble (interim text being refined); our own echoed messages are dropped as duplicates.
+ * Adds [msg] to [captions]. A message whose id is already shown for the same side replaces that
+ * bubble: interim text being refined, or the server echoing back a caption we sent.
  */
 internal fun mergeCaption(captions: List<CaptionMessage>, msg: CaptionMessage): List<CaptionMessage> {
-    if (msg.isMe) {
-        val isDuplicate = captions.any { it.id == msg.id || (it.isMe && it.text == msg.text) }
-        return if (isDuplicate) captions else captions + msg
-    }
-    val index = captions.indexOfFirst { !it.isMe && it.id == msg.id }
+    val index = captions.indexOfFirst { it.isMe == msg.isMe && it.id == msg.id }
     return when {
         index < 0 -> captions + msg
         // A late interim update must not overwrite the finished text
@@ -93,22 +88,6 @@ internal fun mergeCaption(captions: List<CaptionMessage>, msg: CaptionMessage): 
         else -> captions.toMutableList().also { it[index] = msg }
     }
 }
-
-// SpeechRecognizer error codes added in API 31; literals so they compile against minSdk 26
-private const val ERROR_TOO_MANY_REQUESTS = 10
-private const val ERROR_SERVER_DISCONNECTED = 11
-private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
-private const val ERROR_LANGUAGE_UNAVAILABLE = 13
-
-/** Give up restarting the recognizer after this many failures in a row (not counting silence). */
-private const val MAX_CONSECUTIVE_SPEECH_FAILURES = 5
-
-/** Streams the recognizer's start/stop "beep" can play on. Muted while listening during a call. */
-private val BEEP_STREAMS = intArrayOf(
-    android.media.AudioManager.STREAM_MUSIC,
-    android.media.AudioManager.STREAM_NOTIFICATION,
-    android.media.AudioManager.STREAM_SYSTEM
-)
 
 @Composable
 fun TranscriptionScreen(
@@ -118,9 +97,14 @@ fun TranscriptionScreen(
     /** Twilio CallSid of the already-connected call (placed by OutgoingCallScreen or accepted on IncomingCallScreen). */
     callSid: String? = null,
     callEvents: Flow<CallEvent> = emptyFlow(),
+    /** Called once the call ends (either side hung up), while the "Call Ended" view is shown. */
+    onCallEnded: () -> Unit = {},
     onBack: () -> Unit = {}
 ) {
     var onCall by remember { mutableStateOf(true) }
+    LaunchedEffect(onCall) {
+        if (!onCall) onCallEnded()
+    }
     var isMuted by remember { mutableStateOf(false) }
     var isSpeakerOn by remember { mutableStateOf(false) }
     var isEditingSpeech by remember { mutableStateOf(false) }
@@ -239,12 +223,11 @@ fun TranscriptionScreen(
         }
     }
 
-    val speechAvailable = remember { SpeechRecognizer.isRecognitionAvailable(context) }
-    // Set when the recognizer hits an error it can't recover from; "Retry" clears it, restarting the mic
-    var speechError by remember { mutableStateOf<String?>(null) }
-    val micUnusable = !hasMicPermission || !speechAvailable || speechError != null
+    // Set when the mic can't be used; "Retry mic" clears it, restarting the stream
+    var micError by remember { mutableStateOf<String?>(null) }
+    val micUnusable = !hasMicPermission || micError != null
 
-    // If the mic can't caption the user's speech, open the typing box so they can still talk
+    // If the other party can't hear the user, open the typing box so they can still communicate
     LaunchedEffect(micUnusable, onCall) {
         if (micUnusable && onCall) isEditingSpeech = true
     }
@@ -255,175 +238,31 @@ fun TranscriptionScreen(
         }
     }
 
-    var micStatusText by remember { mutableStateOf("Mic: Active (Listening...)") }
+    var micStatusText by remember { mutableStateOf("Mic: Connecting…") }
 
-    // Continuous SpeechRecognizer for caller speech transcription
-    DisposableEffect(onCall, isMuted, hasMicPermission, speechError) {
-        if (!onCall || isMuted || micUnusable) {
+    // Streams the mic into the call so the other party hears the user. The server captions this
+    // audio (it's the call's outbound track), so the user's own speech still shows up below.
+    LaunchedEffect(onCall, isMuted, hasMicPermission, micError, callSid) {
+        if (!onCall || isMuted || micUnusable || callSid == null) {
             micStatusText = when {
                 isMuted -> "Mic: Muted"
                 !hasMicPermission -> "Mic: No permission"
-                !speechAvailable -> "Mic: Speech recognition unavailable"
-                speechError != null -> "Mic: Stopped"
+                micError != null -> "Mic: Stopped"
                 else -> "Mic: Disabled"
             }
-            return@DisposableEffect onDispose {}
+            return@LaunchedEffect
         }
-
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        var consecutiveFailures = 0
-
-        // The recognizer plays a start/stop beep on every restart, which happens every few
-        // seconds of silence. Silence those streams while listening and restore them after.
-        val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-        val streamsWeMuted = BEEP_STREAMS.filter { stream ->
-            try {
-                if (audioManager.isStreamMute(stream)) {
-                    false // user already had it muted; leave it alone
-                } else {
-                    audioManager.adjustStreamVolume(stream, android.media.AudioManager.ADJUST_MUTE, 0)
-                    true
-                }
-            } catch (e: SecurityException) {
-                // Muting notification/system streams can be blocked by Do Not Disturb policy
-                android.util.Log.w("SpeechRecognizer", "Couldn't mute stream $stream: ${e.message}")
-                false
-            }
-        }
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
-
-        fun keepListening(delayMs: Long = 100L) {
-            if (!onCall || isMuted) return
-            handler.removeCallbacksAndMessages(null)
-            handler.postDelayed({
-                if (onCall && !isMuted) {
-                    try {
-                        speechRecognizer.cancel()
-                        speechRecognizer.startListening(intent)
-                    } catch (e: Exception) {
-                        android.util.Log.e("SpeechRecognizer", "Error restarting: ${e.message}")
-                        speechError = "Captioning of your speech stopped unexpectedly."
-                    }
-                }
-            }, delayMs)
-        }
-
-        val listener = object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                android.util.Log.d("SpeechRecognizer", "Ready for speech")
-                micStatusText = "Mic: Active (Listening...)"
-            }
-
-            override fun onBeginningOfSpeech() {
-                android.util.Log.d("SpeechRecognizer", "Beginning of speech")
-                consecutiveFailures = 0
-                micStatusText = "Mic: Hearing speech..."
-            }
-
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-
-            override fun onEndOfSpeech() {
-                android.util.Log.d("SpeechRecognizer", "End of speech")
-                micStatusText = "Mic: Processing..."
-            }
-
-            override fun onError(error: Int) {
-                android.util.Log.e("SpeechRecognizer", "Speech error code: $error")
-                when (error) {
-                    // Silence: normal, just listen again
-                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                        micStatusText = "Mic: Active (Listening...)"
-                        keepListening(100L)
-                    }
-                    // Can't recover by retrying
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> hasMicPermission = false
-                    ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE ->
-                        speechError = "Speech recognition doesn't support your device's language."
-                    else -> {
-                        consecutiveFailures++
-                        if (consecutiveFailures >= MAX_CONSECUTIVE_SPEECH_FAILURES) {
-                            speechError = when (error) {
-                                SpeechRecognizer.ERROR_NETWORK,
-                                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                                SpeechRecognizer.ERROR_SERVER,
-                                ERROR_SERVER_DISCONNECTED ->
-                                    "Speech captioning lost its network connection."
-                                SpeechRecognizer.ERROR_AUDIO ->
-                                    "Couldn't record audio. Another app may be using the microphone."
-                                else -> "Captioning of your speech stopped unexpectedly."
-                            }
-                            return
-                        }
-                        micStatusText = when (error) {
-                            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                                "Mic: Network problem, retrying…"
-                            else -> "Mic: Reconnecting…"
-                        }
-                        // Back off: 0.5s, 1s, 2s, 4s… so we don't spin on a broken recognizer
-                        val backoff = when (error) {
-                            ERROR_TOO_MANY_REQUESTS -> 5000L
-                            else -> 500L shl (consecutiveFailures - 1)
-                        }
-                        keepListening(backoff)
-                    }
-                }
-            }
-
-            override fun onResults(results: Bundle?) {
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val spokenText = matches?.firstOrNull()
-                android.util.Log.d("SpeechRecognizer", "Recognized text: $spokenText")
-                consecutiveFailures = 0
-
-                if (!spokenText.isNullOrBlank()) {
-                    sendMyCaption(spokenText)
-                }
-
-                micStatusText = "Mic: Active (Listening...)"
-                keepListening(100L)
-            }
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val partialText = matches?.firstOrNull()
-                if (!partialText.isNullOrBlank()) {
-                    android.util.Log.d("SpeechRecognizer", "Partial speech: $partialText")
-                    micStatusText = "Mic: \"$partialText\""
-                }
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        }
-
-        speechRecognizer.setRecognitionListener(listener)
         try {
-            speechRecognizer.startListening(intent)
-            micStatusText = "Mic: Active (Listening...)"
-        } catch (e: Exception) {
-            android.util.Log.e("SpeechRecognizer", "Initial startListening error: ${e.message}")
-            speechError = "Couldn't start the microphone."
-        }
-
-        onDispose {
-            handler.removeCallbacksAndMessages(null)
-            try {
-                speechRecognizer.stopListening()
-                speechRecognizer.cancel()
-                speechRecognizer.destroy()
-            } catch (e: Exception) {}
-            // Restore synchronously: a restarted effect checks isStreamMute right after this
-            streamsWeMuted.forEach { stream ->
-                try {
-                    audioManager.adjustStreamVolume(stream, android.media.AudioManager.ADJUST_UNMUTE, 0)
-                } catch (e: SecurityException) {}
+            streamMicrophoneToCall(callService, callSid) { status ->
+                micStatusText = when (status) {
+                    MicStreamStatus.CONNECTING -> "Mic: Connecting…"
+                    MicStreamStatus.STREAMING -> "Mic: Live"
+                    MicStreamStatus.RECONNECTING -> "Mic: Reconnecting…"
+                }
             }
+        } catch (e: MicUnavailableException) {
+            android.util.Log.e("TranscriptionScreen", "Mic stream stopped: ${e.message}")
+            micError = e.message
         }
     }
 
@@ -551,17 +390,14 @@ fun TranscriptionScreen(
             // Problems that affect captioning, most important first
             when {
                 !hasMicPermission -> StatusBanner(
-                    message = "Microphone access is off, so your speech can't be captioned. You can type messages below instead.",
+                    message = "Microphone access is off, so the other person can't hear you. You can type messages below instead.",
                     actionLabel = if (micPermissionDenials >= 2) "Open settings" else "Allow mic",
                     onAction = { requestMicPermission() }
                 )
-                !speechAvailable -> StatusBanner(
-                    message = "Speech recognition isn't available on this device. Type your messages below instead."
-                )
-                speechError != null -> StatusBanner(
-                    message = "$speechError You can type messages below instead.",
+                micError != null -> StatusBanner(
+                    message = "$micError The other person can't hear you; type messages below instead.",
                     actionLabel = "Retry mic",
-                    onAction = { speechError = null }
+                    onAction = { micError = null }
                 )
             }
             if (!captionsConnected) {

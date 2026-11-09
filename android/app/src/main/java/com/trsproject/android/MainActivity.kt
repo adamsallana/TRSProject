@@ -76,6 +76,8 @@ private val IN_CALL_SCREENS = setOf(Screen.OUTGOING_CALL, Screen.INCOMING_CALL, 
 fun MainApp() {
     var currentScreen by remember { mutableStateOf(Screen.AUTH) }
     var activeCall by remember { mutableStateOf<ActiveCall?>(null) }
+    // True once the call on the transcription screen has ended (its "Call Ended" view is showing)
+    var activeCallEnded by remember { mutableStateOf(false) }
 
     val callService = remember { CallService() }
     val appScope = rememberCoroutineScope()
@@ -101,12 +103,14 @@ fun MainApp() {
             .collect { event ->
                 val isNewIncoming = event.direction == "incoming" && event.status == "ringing"
                 if (isNewIncoming) {
-                    if (currentScreen in IN_CALL_SCREENS) {
-                        // Already on a call: reject the new one so the caller isn't left on hold
-                        if (activeCall?.callSid != event.callSid) {
-                            launch { callService.declineIncomingCall(event.callSid) }
-                        }
+                    val busy = currentScreen in IN_CALL_SCREENS && !activeCallEnded
+                    if (busy) {
+                        // Already on a live call: ignore the new one. Don't decline it: the server
+                        // broadcasts calls to every connected app, so declining here would hang up
+                        // on a call another device may want to answer. Unanswered, it times out.
+                        android.util.Log.d("MainApp", "Busy; ignoring incoming call ${event.callSid}")
                     } else {
+                        activeCallEnded = false
                         val number = event.phoneNumber.orEmpty()
                         activeCall = ActiveCall(
                             direction = CallDirection.INCOMING,
@@ -142,6 +146,7 @@ fun MainApp() {
             Screen.HOME -> HomeScreen(
                 modifier = Modifier.padding(innerPadding),
                 onCallClick = { contact ->
+                    activeCallEnded = false
                     val number = contact.phoneNumber.orEmpty()
                     activeCall = ActiveCall(
                         direction = CallDirection.OUTGOING,
@@ -209,6 +214,7 @@ fun MainApp() {
                 callSid = activeCall?.callSid,
                 callEvents = callEvents,
                 modifier = Modifier.padding(innerPadding),
+                onCallEnded = { activeCallEnded = true },
                 onBack = { endCallAndGoHome() }
             )
 

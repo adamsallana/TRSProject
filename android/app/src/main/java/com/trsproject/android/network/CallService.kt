@@ -195,6 +195,43 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         false
     }
 
+    private val wsBaseUrl: String
+        get() = if (baseUrl.startsWith("https://")) {
+            baseUrl.replace("https://", "wss://")
+        } else {
+            baseUrl.replace("http://", "ws://")
+        }
+
+    /**
+     * Opens the socket that carries the user's mic audio into call [callSid]. Send binary frames
+     * of 16-bit little-endian mono PCM at [sampleRate] (a multiple of 8000).
+     */
+    fun connectCallAudioWebSocket(
+        callSid: String,
+        sampleRate: Int,
+        onOpened: () -> Unit,
+        onDropped: (Throwable?) -> Unit
+    ): okhttp3.WebSocket {
+        val encodedSid = java.net.URLEncoder.encode(callSid, "UTF-8")
+        val request = Request.Builder()
+            .url("$wsBaseUrl/call-audio?callSid=$encodedSid&sampleRate=$sampleRate")
+            .build()
+        return wsClient.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) = onOpened()
+
+            override fun onClosing(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
+            }
+
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) = onDropped(null)
+
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                android.util.Log.e("CallService", "Call audio socket failure: ${t.message}")
+                onDropped(t)
+            }
+        })
+    }
+
     /**
      * Opens the server WebSocket. Caption messages go to [onTranscriptReceived], call lifecycle
      * events go to [onCallEvent].
@@ -206,11 +243,6 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         onDisconnected: (Throwable?) -> Unit = {},
         onTranscriptReceived: (CaptionMessage) -> Unit = {}
     ): okhttp3.WebSocket {
-        val wsBaseUrl = if (baseUrl.startsWith("https://")) {
-            baseUrl.replace("https://", "wss://")
-        } else {
-            baseUrl.replace("http://", "ws://")
-        }
         val encodedContact = java.net.URLEncoder.encode(contactName, "UTF-8")
         val wsUrl = "$wsBaseUrl/transcribe?contact=$encodedContact"
 
