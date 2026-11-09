@@ -3,6 +3,7 @@ package com.trsproject.android.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +27,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.trsproject.android.data.model.Contact
+import com.trsproject.android.data.model.UserProfile
 import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
@@ -83,17 +87,35 @@ fun HomeScreen(
     var newContactName by remember { mutableStateOf("") }
     var newContactPhone by remember { mutableStateOf("") }
     var isSavingContact by remember { mutableStateOf(false) }
+    var userInitial by remember { mutableStateOf("U") }
 
-    // Fetch contacts from Supabase backend on launch
+    // Fetch user profile and contacts from Supabase backend on launch
     LaunchedEffect(Unit) {
-        val userId = try {
-            SupabaseService.client.auth.currentUserOrNull()?.id ?: "user_default"
+        val user = try {
+            SupabaseService.client.auth.currentUserOrNull()
         } catch (e: Exception) {
-            "user_default"
+            null
         }
+
+        val userId = user?.id ?: "user_default"
         val fetched = SupabaseService.fetchContacts(userId)
         contactList.clear()
         contactList.addAll(fetched)
+
+        if (user != null) {
+            try {
+                val profile = SupabaseService.fetchUserProfile(user.id)
+                val rawName: String? = profile.fullName?.takeIf { it.isNotBlank() }
+                    ?: profile.displayName?.takeIf { it.isNotBlank() }
+                    ?: user.email?.takeIf { it.isNotBlank() }
+
+                if (!rawName.isNullOrBlank()) {
+                    userInitial = rawName.trim().first().uppercase().toString()
+                }
+            } catch (e: Exception) {
+                // Keep default initial if fetch fails
+            }
+        }
     }
 
     // Listen for real incoming call events from server over WebSocket
@@ -259,37 +281,46 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Favorite Contacts") },
+                title = { Text("Home") },
                 actions = {
-                    IconButton(onClick = { isAddContactDialogOpen = true }) {
-                        Icon(
-                            imageVector = Icons.Default.PersonAdd,
-                            contentDescription = "Add Contact"
-                        )
-                    }
-                    IconButton(onClick = onAccountClick) {
-                        Icon(
-                            imageVector = Icons.Default.AccountCircle,
-                            contentDescription = "Account Settings"
-                        )
-                    }
-                    TextButton(onClick = onSignOut) {
-                        Text("Sign Out")
+                    Surface(
+                        modifier = Modifier
+                            .padding(end = 12.dp)
+                            .size(42.dp)
+                            .clickable { onAccountClick() },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Text(
+                                text = userInitial,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                     }
                 }
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
+            ExtendedFloatingActionButton(
                 onClick = { isAddContactDialogOpen = true },
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "Create Contact"
-                )
-            }
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Create Contact"
+                    )
+                },
+                text = {
+                    Text("New Contact")
+                }
+            )
         },
         modifier = modifier
     ) { innerPadding ->
@@ -312,6 +343,14 @@ fun HomeScreen(
             ) {
                 Text("Test Incoming Call Dialog")
             }
+
+            Text(
+                text = "Contacts",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
 
             val displayList = if (contactList.isNotEmpty()) contactList else contacts
 

@@ -29,7 +29,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "SERVER_WS_URL", "\"wss://trsproject.onrender.com/transcribe\"")
+        val serverWsUrl = localProperties.getProperty("SERVER_WS_URL", "wss://trsproject.onrender.com/transcribe")
+        buildConfigField("String", "SERVER_WS_URL", "\"$serverWsUrl\"")
 
         // Supabase configuration
         val supabaseUrl = localProperties.getProperty("SUPABASE_URL", "")
