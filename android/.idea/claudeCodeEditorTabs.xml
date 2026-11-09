@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClaudeCodeEditorTabs">
+    <option name="activeSessionId" value="a3a610f8-cebc-407b-8e91-98b031dd824a" />
+    <option name="openSessionIds">
+      <list>
+        <option value="a3a610f8-cebc-407b-8e91-98b031dd824a" />
+      </list>
+    </option>
     <option name="sessionPaths">
       <map>
         <entry key="452d27bd-288e-4bfe-94bd-177a8b1d9380" value="/sessions/74b1c1d1-fca6-4150-8921-7143c0bc865a" />
+        <entry key="a3a610f8-cebc-407b-8e91-98b031dd824a" value="/sessions/e4c26d07-3123-4797-a441-7be9ea18f831" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
         <entry key="452d27bd-288e-4bfe-94bd-177a8b1d9380" value="I have many branches we've collaborated on. i want" />
+        <entry key="a3a610f8-cebc-407b-8e91-98b031dd824a" value="i want to set up incoming call &quot;ringing&quot; page for" />
       </map>
     </option>
   </component>

@@ -54,7 +54,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.trsproject.android.data.model.Contact
 import com.trsproject.android.data.remote.SupabaseService
-import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import io.github.jan.supabase.auth.auth
 import kotlinx.coroutines.launch
@@ -71,12 +70,11 @@ fun HomeScreen(
     contacts: List<Contact> = sampleFavorites,
     onCallClick: (Contact) -> Unit = {},
     onAccountClick: () -> Unit = {},
+    onTestIncomingCall: () -> Unit = {},
     onSignOut: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var incomingCallContact by remember { mutableStateOf<Contact?>(null) }
-    val callService = remember { CallService() }
 
     val contactList = remember { mutableStateListOf<Contact>() }
     var isAddContactDialogOpen by remember { mutableStateOf(false) }
@@ -94,22 +92,6 @@ fun HomeScreen(
         val fetched = SupabaseService.fetchContacts(userId)
         contactList.clear()
         contactList.addAll(fetched)
-    }
-
-    // Listen for real incoming call events from server over WebSocket
-    LaunchedEffect(Unit) {
-        try {
-            val socket = callService.connectTranscriptionWebSocket("Client") { msg ->
-                if (msg.text.startsWith("INCOMING_CALL:")) {
-                    val parts = msg.text.split(":")
-                    val callerNum = parts.getOrNull(1) ?: "+17818690609"
-                    val callerName = parts.getOrNull(2) ?: "Contact"
-                    incomingCallContact = Contact("inc", "", callerName, callerNum)
-                }
-            }
-        } catch (e: Exception) {
-            // Ignore connection errors on home screen
-        }
     }
 
     // Add New Contact Dialog Overlay
@@ -207,55 +189,6 @@ fun HomeScreen(
         )
     }
 
-    // Incoming Call Dialog Overlay
-    incomingCallContact?.let { contact ->
-        AlertDialog(
-            onDismissRequest = { incomingCallContact = null },
-            title = {
-                Text(
-                    text = "Incoming Call",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column {
-                    Text(
-                        text = contact.name.orEmpty(),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = contact.phoneNumber.orEmpty(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val currentContact = contact
-                        incomingCallContact = null
-                        onCallClick(currentContact)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
-                ) {
-                    Text("Answer", color = Color.White)
-                }
-            },
-            dismissButton = {
-                Button(
-                    onClick = { incomingCallContact = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
-                ) {
-                    Text("Decline", color = Color.White)
-                }
-            }
-        )
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -301,16 +234,15 @@ fun HomeScreen(
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Test button to trigger simulated incoming call
+            // Test button: asks the server to broadcast a simulated incoming call,
+            // which opens the ringing screen through the normal call-event path
             OutlinedButton(
-                onClick = {
-                    incomingCallContact = Contact("inc", "", "Contact", "+17818690609")
-                },
+                onClick = onTestIncomingCall,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
             ) {
-                Text("Test Incoming Call Dialog")
+                Text("Test Incoming Call")
             }
 
             val displayList = if (contactList.isNotEmpty()) contactList else contacts

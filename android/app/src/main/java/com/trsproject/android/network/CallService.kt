@@ -3,6 +3,9 @@ package com.trsproject.android.network
 import com.trsproject.android.BuildConfig
 import com.trsproject.android.ui.screens.CaptionMessage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -16,152 +19,156 @@ data class TwilioCallResult(
     val errorMessage: String? = null
 )
 
+/**
+ * Call lifecycle event pushed by the server over the /transcribe WebSocket.
+ * [direction] is "outgoing" or "incoming"; [status] is a Twilio CallStatus value
+ * (queued, ringing, in-progress, completed, busy, no-answer, canceled, failed).
+ */
+data class CallEvent(
+    val callSid: String,
+    val direction: String,
+    val status: String,
+    val phoneNumber: String? = null,
+    val name: String? = null
+) {
+    val isTerminal: Boolean get() = status in TERMINAL_STATUSES
+
+    companion object {
+        val TERMINAL_STATUSES = setOf("completed", "busy", "no-answer", "canceled", "failed")
+    }
+}
+
 class CallService(private val baseUrl: String = getHttpBaseUrl()) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
+    /** The configured base URL, plus the emulator loopback alternative when running locally. */
+    private fun candidateBaseUrls(): List<String> = buildList {
+        add(baseUrl)
+        if (baseUrl.contains("127.0.0.1")) {
+            add(baseUrl.replace("127.0.0.1", "10.0.2.2"))
+        } else if (baseUrl.contains("10.0.2.2")) {
+            add(baseUrl.replace("10.0.2.2", "127.0.0.1"))
+        }
+    }
+
+    /**
+     * POSTs [payload] to [path] and returns the parsed JSON body. Tries each candidate base URL
+     * until one responds. Throws if none can be reached or the HTTP status is not 2xx.
+     */
+    private suspend fun postJson(path: String, payload: JSONObject): JSONObject? = withContext(Dispatchers.IO) {
+        var lastError: Exception? = null
+        for (targetUrl in candidateBaseUrls()) {
+            try {
+                val request = Request.Builder()
+                    .url("$targetUrl$path")
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string()
+                    val json = body?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+                    if (!response.isSuccessful) {
+                        val error = json?.optString("error")?.ifBlank { null }
+                            ?: "HTTP ${response.code}: ${response.message}"
+                        throw IllegalStateException(error)
+                    }
+                    return@withContext json
+                }
+            } catch (e: IllegalStateException) {
+                throw e // Server answered with an error; don't retry on another host
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IllegalStateException("Network error occurred")
+    }
+
+    /** Calls an endpoint that replies `{status: "success" | "error", error?}`. */
+    private suspend fun postCallAction(path: String, callSid: String): TwilioCallResult = try {
+        val json = postJson(path, JSONObject().put("callSid", callSid))
+        val status = json?.optString("status")?.ifBlank { null }
+        if (status == "success") {
+            TwilioCallResult(success = true, callSid = callSid)
+        } else {
+            TwilioCallResult(
+                success = false,
+                callSid = callSid,
+                errorMessage = json?.optString("error")?.ifBlank { null } ?: "Unexpected server response"
+            )
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("CallService", "$path failed: ${e.message}")
+        TwilioCallResult(success = false, callSid = callSid, errorMessage = e.localizedMessage ?: "Network error occurred")
+    }
+
     suspend fun makeCall(
         toPhoneNumber: String,
         fromPhoneNumber: String? = null,
         webhookUrl: String? = null
-    ): TwilioCallResult = withContext(Dispatchers.IO) {
-        val urlsToTry = mutableListOf(baseUrl)
-        if (baseUrl.contains("127.0.0.1")) {
-            urlsToTry.add(baseUrl.replace("127.0.0.1", "10.0.2.2"))
-        } else if (baseUrl.contains("10.0.2.2")) {
-            urlsToTry.add(baseUrl.replace("10.0.2.2", "127.0.0.1"))
+    ): TwilioCallResult {
+        val payload = JSONObject().apply {
+            put("toPhoneNumber", toPhoneNumber)
+            if (!fromPhoneNumber.isNullOrBlank()) put("fromPhoneNumber", fromPhoneNumber)
+            if (!webhookUrl.isNullOrBlank()) put("webhookUrl", webhookUrl)
         }
+        return try {
+            val json = postJson("/api/make-call", payload)
+            val status = json?.optString("status")?.ifBlank { null } ?: "success"
+            val extractedSid = json?.let { j ->
+                sequenceOf("callSid", "sid", "CallSid", "call_sid")
+                    .map { j.optString(it, "") }
+                    .firstOrNull { it.isNotBlank() }
+                    ?: j.optJSONObject("call")?.optString("sid", "")?.takeIf { it.isNotBlank() }
+            }
+            val error = json?.optString("error")?.ifBlank { null }
 
-        var lastError: String? = null
-        for (targetUrl in urlsToTry) {
+            if (status == "success" && !extractedSid.isNullOrBlank()) {
+                android.util.Log.d("CallService", "makeCall successful! callSid=$extractedSid")
+                TwilioCallResult(success = true, callSid = extractedSid)
+            } else {
+                android.util.Log.e("CallService", "makeCall response error: $error, body=$json")
+                TwilioCallResult(success = false, errorMessage = error ?: "Server returned success but missing CallSid")
+            }
+        } catch (e: Exception) {
+            TwilioCallResult(success = false, errorMessage = e.localizedMessage ?: "Network error occurred")
+        }
+    }
+
+    /** Hangs up [callSid]. The server cancels it if still ringing, or completes it if connected. */
+    suspend fun endCall(callSid: String): TwilioCallResult = postCallAction("/api/end-call", callSid)
+
+    /** Connects a ringing incoming call to the transcription loop. */
+    suspend fun acceptIncomingCall(callSid: String): TwilioCallResult =
+        postCallAction("/api/incoming-call/accept", callSid)
+
+    /** Rejects a ringing incoming call. */
+    suspend fun declineIncomingCall(callSid: String): TwilioCallResult =
+        postCallAction("/api/incoming-call/decline", callSid)
+
+    /** Asks the server to broadcast a fake incoming call (sid prefixed with TEST-). */
+    suspend fun triggerTestIncomingCall(): Boolean = withContext(Dispatchers.IO) {
+        for (targetUrl in candidateBaseUrls()) {
             try {
-                val jsonPayload = JSONObject().apply {
-                    put("toPhoneNumber", toPhoneNumber)
-                    if (!fromPhoneNumber.isNullOrBlank()) {
-                        put("fromPhoneNumber", fromPhoneNumber)
-                    }
-                    if (!webhookUrl.isNullOrBlank()) {
-                        put("webhookUrl", webhookUrl)
-                    }
-                }
-
-                val requestBody = jsonPayload.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-                val request = Request.Builder()
-                    .url("$targetUrl/api/make-call")
-                    .post(requestBody)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBodyStr = response.body?.string()
-                    val jsonResponse = if (!responseBodyStr.isNullOrBlank()) {
-                        JSONObject(responseBodyStr)
-                    } else null
-
-                    if (response.isSuccessful) {
-                        val status = jsonResponse?.optString("status")?.ifBlank { null } ?: "success"
-                        val extractedSid = jsonResponse?.let { json ->
-                            sequenceOf("callSid", "sid", "CallSid", "call_sid")
-                                .map { json.optString(it, "") }
-                                .firstOrNull { it.isNotBlank() }
-                                ?: json.optJSONObject("call")?.optString("sid", "")?.takeIf { it.isNotBlank() }
-                        }
-                        val error = jsonResponse?.optString("error")?.ifBlank { null }
-
-                        if (status == "success" && !extractedSid.isNullOrBlank()) {
-                            android.util.Log.d("CallService", "makeCall successful! extractedSid=$extractedSid")
-                            return@withContext TwilioCallResult(success = true, callSid = extractedSid)
-                        } else {
-                            android.util.Log.e("CallService", "makeCall response error: $error, rawBody=$responseBodyStr")
-                            return@withContext TwilioCallResult(
-                                success = false,
-                                errorMessage = error ?: "Server returned success but missing CallSid"
-                            )
-                        }
-                    } else {
-                        val errorMsg = jsonResponse?.optString("error")?.ifBlank { null }
-                            ?: "HTTP ${response.code}: ${response.message}"
-                        return@withContext TwilioCallResult(success = false, errorMessage = errorMsg)
-                    }
-                }
+                val request = Request.Builder().url("$targetUrl/api/trigger-incoming-call").get().build()
+                client.newCall(request).execute().use { if (it.isSuccessful) return@withContext true }
             } catch (e: Exception) {
-                lastError = e.localizedMessage ?: "Network error occurred"
+                android.util.Log.e("CallService", "triggerTestIncomingCall failed on $targetUrl: ${e.message}")
             }
         }
-        TwilioCallResult(
-            success = false,
-            errorMessage = lastError
-        )
+        false
     }
 
-    suspend fun endCall(
-        callSid: String? = null,
-        toPhoneNumber: String? = null
-    ): TwilioCallResult = withContext(Dispatchers.IO) {
-        val urlsToTry = mutableListOf(baseUrl)
-        if (baseUrl.contains("127.0.0.1")) {
-            urlsToTry.add(baseUrl.replace("127.0.0.1", "10.0.2.2"))
-        } else if (baseUrl.contains("10.0.2.2")) {
-            urlsToTry.add(baseUrl.replace("10.0.2.2", "127.0.0.1"))
-        }
-
-        val endpointsToTry = listOf("/api/end-call", "/api/hangup", "/api/call/end", "/api/calls/end")
-        var lastError: String? = null
-
-        for (targetUrl in urlsToTry) {
-            for (endpoint in endpointsToTry) {
-                try {
-                    val jsonPayload = JSONObject().apply {
-                        if (!callSid.isNullOrBlank()) {
-                            put("callSid", callSid)
-                            put("sid", callSid)
-                            put("CallSid", callSid)
-                            put("call_sid", callSid)
-                        }
-                        if (!toPhoneNumber.isNullOrBlank()) {
-                            put("toPhoneNumber", toPhoneNumber)
-                            put("phoneNumber", toPhoneNumber)
-                        }
-                        put("status", "completed")
-                        put("action", "hangup")
-                    }
-
-                    val requestBody = jsonPayload.toString()
-                        .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-                    val sidQuery = if (!callSid.isNullOrBlank()) "?callSid=$callSid" else ""
-                    val request = Request.Builder()
-                        .url("$targetUrl$endpoint$sidQuery")
-                        .post(requestBody)
-                        .build()
-
-                    client.newCall(request).execute().use { response ->
-                        val responseBodyStr = response.body?.string()
-                        android.util.Log.d("CallService", "endCall endpoint $endpoint response code=${response.code}, body=$responseBodyStr")
-                        if (response.isSuccessful) {
-                            return@withContext TwilioCallResult(success = true, callSid = callSid)
-                        } else {
-                            lastError = "HTTP ${response.code}: ${response.message}"
-                        }
-                    }
-                } catch (e: Exception) {
-                    lastError = e.localizedMessage ?: "Network error occurred"
-                    android.util.Log.e("CallService", "endCall exception on $endpoint: ${e.message}")
-                }
-            }
-        }
-        TwilioCallResult(
-            success = false,
-            errorMessage = lastError
-        )
-    }
-
+    /**
+     * Opens the server WebSocket. Caption messages go to [onTranscriptReceived], call lifecycle
+     * events go to [onCallEvent].
+     */
     fun connectTranscriptionWebSocket(
         contactName: String,
-        onTranscriptReceived: (com.trsproject.android.ui.screens.CaptionMessage) -> Unit
+        onCallEvent: (CallEvent) -> Unit = {},
+        onDisconnected: (Throwable?) -> Unit = {},
+        onTranscriptReceived: (CaptionMessage) -> Unit = {}
     ): okhttp3.WebSocket {
         val wsBaseUrl = if (baseUrl.startsWith("https://")) {
             baseUrl.replace("https://", "wss://")
@@ -174,35 +181,81 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         val request = Request.Builder().url(wsUrl).build()
         return client.newWebSocket(request, object : okhttp3.WebSocketListener() {
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
-                try {
-                    val json = JSONObject(text)
-                    val id = json.optInt("id", System.currentTimeMillis().toInt())
-                    val senderName = json.optString("senderName", contactName)
-                    val transcriptText = json.optString("text", "")
-                    val isMe = json.optBoolean("isMe", false) || senderName.equals("Me", ignoreCase = true)
-
-                    if (transcriptText.isNotBlank()) {
-                        onTranscriptReceived(
-                            com.trsproject.android.ui.screens.CaptionMessage(
-                                id = id,
-                                senderName = senderName,
-                                text = transcriptText,
-                                isMe = isMe
-                            )
-                        )
-                    }
+                val json = try {
+                    JSONObject(text)
                 } catch (e: Exception) {
+                    // Plain-text frame: show it as a caption from the other party
                     onTranscriptReceived(
-                        com.trsproject.android.ui.screens.CaptionMessage(
+                        CaptionMessage(
                             id = System.currentTimeMillis().toInt(),
                             senderName = contactName,
                             text = text,
                             isMe = false
                         )
                     )
+                    return
+                }
+
+                when (json.optString("type", "transcript")) {
+                    "call_event" -> {
+                        val callSid = json.optString("callSid")
+                        val status = json.optString("status")
+                        if (callSid.isNotBlank() && status.isNotBlank()) {
+                            onCallEvent(
+                                CallEvent(
+                                    callSid = callSid,
+                                    direction = json.optString("direction", "outgoing"),
+                                    status = status,
+                                    phoneNumber = json.optString("phoneNumber").ifBlank { null },
+                                    name = json.optString("name").ifBlank { null }
+                                )
+                            )
+                        }
+                    }
+
+                    "transcript" -> {
+                        val id = json.optInt("id", System.currentTimeMillis().toInt())
+                        val senderName = json.optString("senderName", contactName)
+                        val transcriptText = json.optString("text", "")
+                        val isMe = json.optBoolean("isMe", false) || senderName.equals("Me", ignoreCase = true)
+                        if (transcriptText.isNotBlank()) {
+                            onTranscriptReceived(
+                                CaptionMessage(
+                                    id = id,
+                                    senderName = senderName,
+                                    text = transcriptText,
+                                    isMe = isMe
+                                )
+                            )
+                        }
+                    }
+
+                    else -> Unit
                 }
             }
+
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                android.util.Log.e("CallService", "WebSocket failure: ${t.message}")
+                onDisconnected(t)
+            }
+
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                onDisconnected(null)
+            }
         })
+    }
+
+    /**
+     * Stream of call events for as long as it's collected. Closes the socket on cancellation.
+     * Completes with an error if the socket drops, so callers can `retryWhen` to reconnect.
+     */
+    fun callEvents(): Flow<CallEvent> = callbackFlow {
+        val socket = connectTranscriptionWebSocket(
+            contactName = "Client",
+            onCallEvent = { trySend(it) },
+            onDisconnected = { cause -> close(cause ?: IllegalStateException("Call event socket closed")) }
+        )
+        awaitClose { socket.close(1000, "Stopped listening for call events") }
     }
 
     companion object {

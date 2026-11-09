@@ -1,6 +1,7 @@
 package com.trsproject.server
 
 import com.twilio.Twilio
+import com.twilio.http.HttpMethod
 import com.twilio.rest.api.v2010.account.Call
 import com.twilio.type.PhoneNumber
 import io.ktor.http.ContentType
@@ -15,6 +16,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -24,15 +26,13 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.net.URI
 import java.util.Collections
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 @Serializable
@@ -50,42 +50,100 @@ data class MakeCallResponse(
 )
 
 @Serializable
-data class EndCallRequest(
+data class CallSidRequest(
     val callSid: String? = null,
     val sid: String? = null,
-    val call_sid: String? = null,
-    val toPhoneNumber: String? = null,
-    val phoneNumber: String? = null,
-    val status: String? = null,
-    val action: String? = null
-)
+    val call_sid: String? = null
+) {
+    fun resolvedSid(): String? = (callSid ?: sid ?: call_sid)?.takeIf { it.isNotBlank() }
+}
 
 @Serializable
-data class EndCallResponse(
+data class SimpleResponse(
     val status: String,
     val error: String? = null
 )
 
+/** A line of live captions. `type` lets clients tell captions apart from call events. */
 @Serializable
 data class TranscriptMessage(
     val id: Int,
     val senderName: String,
     val text: String,
-    val isMe: Boolean
+    val isMe: Boolean,
+    val type: String = "transcript"
 )
+
+/**
+ * Call lifecycle event pushed to apps over the /transcribe WebSocket.
+ * direction: "outgoing" | "incoming"
+ * status: Twilio CallStatus values (queued, ringing, in-progress, completed, busy,
+ *         no-answer, canceled, failed).
+ */
+@Serializable
+data class CallEvent(
+    val callSid: String,
+    val direction: String,
+    val status: String,
+    val phoneNumber: String? = null,
+    val name: String? = null,
+    val type: String = "call_event"
+)
+
+private data class TrackedCall(val direction: String, val phoneNumber: String?)
+
+// encodeDefaults so the `type` discriminator is always sent
+private val wireJson = Json {
+    encodeDefaults = true
+    ignoreUnknownKeys = true
+}
 
 private val activeSessions = Collections.synchronizedList(mutableListOf<DefaultWebSocketServerSession>())
 private val messageIdCounter = AtomicInteger(1)
+private val trackedCalls = ConcurrentHashMap<String, TrackedCall>()
+
+private val publicBaseUrl: String =
+    (System.getenv("PUBLIC_BASE_URL") ?: "https://trsproject.onrender.com").removeSuffix("/")
+
+private val TERMINAL_STATUSES = setOf("completed", "busy", "no-answer", "canceled", "failed")
+
+private const val TEST_SID_PREFIX = "TEST-"
+
+private val GATHER_TWIML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
+        <Redirect>/api/twiml</Redirect>
+    </Response>
+""".trimIndent()
+
+// Keeps an incoming caller waiting while the app rings. After ~30s with no answer
+// Twilio follows the redirect and we report a missed call.
+private val INCOMING_HOLD_TWIML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Say>Please hold while we connect your call.</Say>
+        <Pause length="30"/>
+        <Redirect method="POST">/api/incoming-call/timeout</Redirect>
+    </Response>
+""".trimIndent()
+
+private val INCOMING_TIMEOUT_TWIML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Say>Sorry, no one is available to take your call.</Say>
+        <Hangup/>
+    </Response>
+""".trimIndent()
 
 fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
     embeddedServer(CIO, host = "0.0.0.0", port = port, module = Application::module).start(wait = true)
 }
 
-suspend fun broadcastTranscript(message: TranscriptMessage) {
-    val jsonStr = Json.encodeToString(message)
+private suspend fun broadcastRaw(jsonStr: String) {
     val sessions = synchronized(activeSessions) { activeSessions.toList() }
-    println(">>> [SERVER] BROADCASTING TRANSCRIPT TO ${sessions.size} CLIENTS: $jsonStr")
+    println(">>> [SERVER] BROADCASTING TO ${sessions.size} CLIENTS: $jsonStr")
     for (session in sessions) {
         try {
             session.send(Frame.Text(jsonStr))
@@ -93,6 +151,36 @@ suspend fun broadcastTranscript(message: TranscriptMessage) {
             println(">>> [SERVER] ERROR SENDING TO WEBSOCKET: ${e.message}")
         }
     }
+}
+
+suspend fun broadcastTranscript(message: TranscriptMessage) =
+    broadcastRaw(wireJson.encodeToString(message))
+
+suspend fun broadcastCallEvent(event: CallEvent) =
+    broadcastRaw(wireJson.encodeToString(event))
+
+/** Initializes Twilio from env vars. Returns false if credentials are missing. */
+private fun initTwilio(): Boolean {
+    val sid = System.getenv("TWILIO_ACCOUNT_SID")
+    val token = System.getenv("TWILIO_AUTH_TOKEN")
+    if (sid.isNullOrBlank() || token.isNullOrBlank()) return false
+    Twilio.init(sid, token)
+    return true
+}
+
+private const val MISSING_CREDENTIALS =
+    "Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) are not configured on the server."
+
+/** Reads a callSid from a JSON body, falling back to the `callSid`/`sid` query parameters. */
+private suspend fun RoutingContext.receiveCallSid(): String? {
+    val fromBody = try {
+        call.receive<CallSidRequest>().resolvedSid()
+    } catch (e: Exception) {
+        null
+    }
+    return fromBody
+        ?: call.request.queryParameters["callSid"]?.takeIf { it.isNotBlank() }
+        ?: call.request.queryParameters["sid"]?.takeIf { it.isNotBlank() }
 }
 
 fun Application.module() {
@@ -104,16 +192,10 @@ fun Application.module() {
         })
     }
 
-    val accountSid = System.getenv("TWILIO_ACCOUNT_SID")
-    val authToken = System.getenv("TWILIO_AUTH_TOKEN")
-    val defaultFromNumber = "+12182745801"
-
-    if (!accountSid.isNullOrBlank() && !authToken.isNullOrBlank()) {
-        Twilio.init(accountSid, authToken)
-    }
+    initTwilio()
 
     routing {
-        // WebSocket endpoint for live dual-sided call transcriptions
+        // WebSocket endpoint for live captions and call events
         webSocket("/transcribe") {
             val contactName = call.request.queryParameters["contact"] ?: "Contact"
             activeSessions.add(this)
@@ -122,24 +204,30 @@ fun Application.module() {
                 for (frame in incoming) {
                     when (frame) {
                         is Frame.Binary -> {
-                            val audioChunk = frame.readBytes()
-                            // Binary mic audio frames received from Android client
+                            frame.readBytes()
+                            // Binary mic audio frames received from Android client (unused for now)
                         }
                         is Frame.Text -> {
                             val text = frame.readText()
-                            if (text.isNotBlank()) {
-                                try {
-                                    val customMsg = Json.decodeFromString<TranscriptMessage>(text)
-                                    broadcastTranscript(customMsg)
-                                } catch (e: Exception) {
-                                    val simpleMsg = TranscriptMessage(
+                            if (text.isBlank()) continue
+                            val parsed = try {
+                                wireJson.decodeFromString<TranscriptMessage>(text)
+                            } catch (e: Exception) {
+                                null
+                            }
+                            when {
+                                parsed != null -> broadcastTranscript(parsed)
+                                // Don't echo unrecognised JSON (e.g. control messages) as captions
+                                text.trimStart().startsWith("{") ->
+                                    println(">>> [SERVER] IGNORING NON-TRANSCRIPT JSON FRAME: $text")
+                                else -> broadcastTranscript(
+                                    TranscriptMessage(
                                         id = messageIdCounter.getAndIncrement(),
                                         senderName = "Me",
                                         text = text,
                                         isMe = true
                                     )
-                                    broadcastTranscript(simpleMsg)
-                                }
+                                )
                             }
                         }
                         else -> Unit
@@ -153,26 +241,12 @@ fun Application.module() {
             }
         }
 
-        // TwiML endpoint for initiating active calls without sample test prompts
+        // TwiML loop that gathers the remote party's speech for captioning
         get("/api/twiml") {
-            val twiml = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <Response>
-                    <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
-                    <Redirect>/api/twiml</Redirect>
-                </Response>
-            """.trimIndent()
-            call.respondText(twiml, ContentType.Application.Xml)
+            call.respondText(GATHER_TWIML, ContentType.Application.Xml)
         }
         post("/api/twiml") {
-            val twiml = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <Response>
-                    <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
-                    <Redirect>/api/twiml</Redirect>
-                </Response>
-            """.trimIndent()
-            call.respondText(twiml, ContentType.Application.Xml)
+            call.respondText(GATHER_TWIML, ContentType.Application.Xml)
         }
 
         // Endpoint to receive Twilio speech recognition webhook results for the called phone
@@ -183,60 +257,135 @@ fun Application.module() {
             println(">>> [SERVER] RECEIVED TWILIO SPEECH CALLBACK: speechResult='$speechResult', contactName='$contactName'")
 
             if (!speechResult.isNullOrBlank()) {
-                val calleeMessage = TranscriptMessage(
-                    id = messageIdCounter.getAndIncrement(),
-                    senderName = contactName,
-                    text = speechResult,
-                    isMe = false
+                broadcastTranscript(
+                    TranscriptMessage(
+                        id = messageIdCounter.getAndIncrement(),
+                        senderName = contactName,
+                        text = speechResult,
+                        isMe = false
+                    )
                 )
-                broadcastTranscript(calleeMessage)
             }
 
-            // Return TwiML to continue gathering speech without hanging up
-            val twiml = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <Response>
-                    <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
-                    <Redirect>/api/twiml</Redirect>
-                </Response>
-            """.trimIndent()
-            call.respondText(twiml, ContentType.Application.Xml)
+            // Continue gathering speech without hanging up
+            call.respondText(GATHER_TWIML, ContentType.Application.Xml)
         }
 
-        // Endpoint to receive Twilio Webhook when someone calls our Twilio number +12182745801
+        // Twilio status callback for call progress (outgoing calls are registered in /api/make-call;
+        // for incoming calls, set this URL as the number's "Call status changes" webhook in the
+        // Twilio console so the app learns when a caller hangs up while ringing).
+        post("/api/call-status") {
+            val params = call.receiveParameters()
+            val callSid = params["CallSid"]
+            val status = params["CallStatus"]
+            println(">>> [SERVER] CALL STATUS CALLBACK: sid=$callSid status=$status")
+
+            if (!callSid.isNullOrBlank() && !status.isNullOrBlank()) {
+                val tracked = trackedCalls[callSid]
+                val direction = tracked?.direction
+                    ?: if (params["Direction"] == "inbound") "incoming" else "outgoing"
+                val phoneNumber = tracked?.phoneNumber
+                    ?: if (direction == "incoming") params["From"] else params["To"]
+
+                broadcastCallEvent(CallEvent(callSid, direction, status, phoneNumber))
+                if (status in TERMINAL_STATUSES) trackedCalls.remove(callSid)
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        // Twilio webhook when someone calls our Twilio number. The caller is held
+        // (not connected to transcription) until the app user accepts.
         post("/api/incoming-call") {
             val params = call.receiveParameters()
-            val callerNumber = params["From"] ?: "+17818690609"
-            println(">>> [SERVER] INCOMING CALL RECEIVED FROM: $callerNumber")
+            val callSid = params["CallSid"]
+            val callerNumber = params["From"] ?: "Unknown"
+            println(">>> [SERVER] INCOMING CALL RECEIVED FROM: $callerNumber (sid=$callSid)")
 
-            val incomingMessage = TranscriptMessage(
-                id = 0,
-                senderName = "System",
-                text = "INCOMING_CALL:$callerNumber:Contact",
-                isMe = false
-            )
-            broadcastTranscript(incomingMessage)
-
-            val twiml = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <Response>
-                    <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
-                    <Redirect>/api/twiml</Redirect>
-                </Response>
-            """.trimIndent()
-            call.respondText(twiml, ContentType.Application.Xml)
+            if (!callSid.isNullOrBlank()) {
+                trackedCalls[callSid] = TrackedCall("incoming", callerNumber)
+                broadcastCallEvent(CallEvent(callSid, "incoming", "ringing", callerNumber))
+            }
+            call.respondText(INCOMING_HOLD_TWIML, ContentType.Application.Xml)
         }
 
-        // Endpoint to simulate an incoming call for testing
+        // Reached when the hold pause runs out without the app user answering
+        post("/api/incoming-call/timeout") {
+            val params = call.receiveParameters()
+            val callSid = params["CallSid"]
+            println(">>> [SERVER] INCOMING CALL TIMED OUT: sid=$callSid")
+            if (!callSid.isNullOrBlank()) {
+                val tracked = trackedCalls.remove(callSid)
+                broadcastCallEvent(CallEvent(callSid, "incoming", "no-answer", tracked?.phoneNumber ?: params["From"]))
+            }
+            call.respondText(INCOMING_TIMEOUT_TWIML, ContentType.Application.Xml)
+        }
+
+        // App user accepted the incoming call: move the caller into the transcription loop
+        post("/api/incoming-call/accept") {
+            val callSid = receiveCallSid()
+            if (callSid == null) {
+                call.respond(SimpleResponse(status = "error", error = "No callSid provided."))
+                return@post
+            }
+            val phoneNumber = trackedCalls[callSid]?.phoneNumber
+
+            if (!callSid.startsWith(TEST_SID_PREFIX)) {
+                if (!initTwilio()) {
+                    call.respond(SimpleResponse(status = "error", error = MISSING_CREDENTIALS))
+                    return@post
+                }
+                try {
+                    Call.updater(callSid)
+                        .setUrl(URI.create("$publicBaseUrl/api/twiml"))
+                        .setMethod(HttpMethod.POST)
+                        .update()
+                } catch (e: Exception) {
+                    println(">>> [SERVER] FAILED TO ACCEPT INCOMING CALL: ${e.message}")
+                    call.respond(SimpleResponse(status = "error", error = "Failed to accept call: ${e.message}"))
+                    return@post
+                }
+            }
+
+            println(">>> [SERVER] INCOMING CALL ACCEPTED: sid=$callSid")
+            broadcastCallEvent(CallEvent(callSid, "incoming", "in-progress", phoneNumber))
+            call.respond(SimpleResponse(status = "success"))
+        }
+
+        // App user declined the incoming call: hang up on the caller
+        post("/api/incoming-call/decline") {
+            val callSid = receiveCallSid()
+            if (callSid == null) {
+                call.respond(SimpleResponse(status = "error", error = "No callSid provided."))
+                return@post
+            }
+            val tracked = trackedCalls.remove(callSid)
+
+            if (!callSid.startsWith(TEST_SID_PREFIX)) {
+                if (!initTwilio()) {
+                    call.respond(SimpleResponse(status = "error", error = MISSING_CREDENTIALS))
+                    return@post
+                }
+                try {
+                    Call.updater(callSid).setStatus(Call.UpdateStatus.COMPLETED).update()
+                } catch (e: Exception) {
+                    println(">>> [SERVER] FAILED TO DECLINE INCOMING CALL: ${e.message}")
+                    call.respond(SimpleResponse(status = "error", error = "Failed to decline call: ${e.message}"))
+                    return@post
+                }
+            }
+
+            println(">>> [SERVER] INCOMING CALL DECLINED: sid=$callSid")
+            broadcastCallEvent(CallEvent(callSid, "incoming", "canceled", tracked?.phoneNumber))
+            call.respond(SimpleResponse(status = "success"))
+        }
+
+        // Simulates an incoming call for testing (no real Twilio call; accept/decline are no-ops)
         get("/api/trigger-incoming-call") {
-            val incomingMessage = TranscriptMessage(
-                id = 0,
-                senderName = "System",
-                text = "INCOMING_CALL:+17818690609:Contact",
-                isMe = false
-            )
-            broadcastTranscript(incomingMessage)
-            call.respondText("Incoming call triggered!", ContentType.Text.Plain)
+            val callSid = TEST_SID_PREFIX + UUID.randomUUID()
+            val callerNumber = call.request.queryParameters["from"] ?: "+17818690609"
+            trackedCalls[callSid] = TrackedCall("incoming", callerNumber)
+            broadcastCallEvent(CallEvent(callSid, "incoming", "ringing", callerNumber))
+            call.respondText("Incoming call triggered! sid=$callSid", ContentType.Text.Plain)
         }
 
         // Endpoint to initiate a call via Twilio REST API
@@ -250,31 +399,27 @@ fun Application.module() {
                 return@post
             }
 
-            val currentAccountSid = System.getenv("TWILIO_ACCOUNT_SID")
-            val currentAuthToken = System.getenv("TWILIO_AUTH_TOKEN")
-
-            if (currentAccountSid.isNullOrBlank() || currentAuthToken.isNullOrBlank()) {
-                call.respond(
-                    MakeCallResponse(
-                        status = "error",
-                        error = "Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) are not configured on the server."
-                    )
-                )
+            if (!initTwilio()) {
+                call.respond(MakeCallResponse(status = "error", error = MISSING_CREDENTIALS))
                 return@post
             }
 
             try {
-                Twilio.init(currentAccountSid, currentAuthToken)
-
                 val fromNumber = request.fromPhoneNumber?.takeIf { it.isNotBlank() } ?: "+12182745801"
                 val webhook = request.webhookUrl?.takeIf { it.isNotBlank() }
-                    ?: "https://trsproject.onrender.com/api/twiml"
+                    ?: "$publicBaseUrl/api/twiml"
 
                 val twilioCall = Call.creator(
                     PhoneNumber(request.toPhoneNumber),
                     PhoneNumber(fromNumber),
                     URI.create(webhook)
-                ).create()
+                )
+                    .setStatusCallback(URI.create("$publicBaseUrl/api/call-status"))
+                    .setStatusCallbackEvent(listOf("initiated", "ringing", "answered", "completed"))
+                    .setStatusCallbackMethod(HttpMethod.POST)
+                    .create()
+
+                trackedCalls[twilioCall.sid] = TrackedCall("outgoing", request.toPhoneNumber)
 
                 call.respond(
                     MakeCallResponse(
@@ -292,70 +437,40 @@ fun Application.module() {
             }
         }
 
-        // Endpoint to end an active call via Twilio REST API
+        // Ends a call. Ringing/queued calls are canceled; connected calls are completed.
         post("/api/end-call") {
-            var targetCallSid: String? = null
-            var receiveError: String? = null
-
-            try {
-                val request = call.receive<EndCallRequest>()
-                targetCallSid = request.callSid
-                    ?: request.sid
-                    ?: request.call_sid
-            } catch (e: Exception) {
-                receiveError = e.localizedMessage
-                println(">>> [SERVER] END CALL receive JSON exception: ${e.message}")
+            val callSid = receiveCallSid()
+            if (callSid == null) {
+                println(">>> [SERVER] END CALL WARNING: No callSid provided in request")
+                call.respond(SimpleResponse(status = "error", error = "No callSid provided to end call."))
+                return@post
             }
 
-            if (targetCallSid.isNullOrBlank()) {
-                targetCallSid = call.request.queryParameters["callSid"]
-                    ?: call.request.queryParameters["sid"]
+            if (callSid.startsWith(TEST_SID_PREFIX)) {
+                trackedCalls.remove(callSid)
+                call.respond(SimpleResponse(status = "success"))
+                return@post
             }
 
-            val currentAccountSid = System.getenv("TWILIO_ACCOUNT_SID")
-            val currentAuthToken = System.getenv("TWILIO_AUTH_TOKEN")
-
-            if (currentAccountSid.isNullOrBlank() || currentAuthToken.isNullOrBlank()) {
+            if (!initTwilio()) {
                 println(">>> [SERVER] END CALL FAILED: Twilio credentials not configured")
-                call.respond(
-                    EndCallResponse(
-                        status = "error",
-                        error = "Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) are not configured on the server."
-                    )
-                )
-                return@post
-            }
-
-            if (targetCallSid.isNullOrBlank()) {
-                println(">>> [SERVER] END CALL WARNING: No callSid provided in request (receiveError=$receiveError)")
-                call.respond(
-                    EndCallResponse(
-                        status = "error",
-                        error = "No callSid provided to end call."
-                    )
-                )
+                call.respond(SimpleResponse(status = "error", error = MISSING_CREDENTIALS))
                 return@post
             }
 
             try {
-                Twilio.init(currentAccountSid, currentAuthToken)
+                val currentStatus = Call.fetcher(callSid).fetch().status
+                val newStatus = when (currentStatus) {
+                    Call.Status.QUEUED, Call.Status.RINGING -> Call.UpdateStatus.CANCELED
+                    else -> Call.UpdateStatus.COMPLETED
+                }
+                val updatedCall = Call.updater(callSid).setStatus(newStatus).update()
+                println(">>> [SERVER] CALL ENDED via Twilio REST API: sid=${updatedCall.sid}, was=$currentStatus, now=${updatedCall.status}")
 
-                val updatedCall = Call.updater(targetCallSid).setStatus(Call.UpdateStatus.COMPLETED).update()
-                println(">>> [SERVER] CALL ENDED SUCCESSFULLY via Twilio REST API: sid=${updatedCall.sid}, status=${updatedCall.status}")
-
-                call.respond(
-                    EndCallResponse(
-                        status = "success"
-                    )
-                )
+                call.respond(SimpleResponse(status = "success"))
             } catch (e: Exception) {
                 println(">>> [SERVER] FAILED TO END CALL VIA TWILIO: ${e.message}")
-                call.respond(
-                    EndCallResponse(
-                        status = "error",
-                        error = "Failed to end call via Twilio: ${e.message}"
-                    )
-                )
+                call.respond(SimpleResponse(status = "error", error = "Failed to end call via Twilio: ${e.message}"))
             }
         }
     }

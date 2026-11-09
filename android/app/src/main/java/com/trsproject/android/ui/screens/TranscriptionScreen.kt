@@ -57,8 +57,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.trsproject.android.network.CallEvent
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 // Data model for a caption line
@@ -74,6 +77,9 @@ fun TranscriptionScreen(
     modifier: Modifier = Modifier,
     contactName: String? = null,
     contactPhoneNumber: String? = null,
+    /** Twilio CallSid of the already-connected call (placed by OutgoingCallScreen or accepted on IncomingCallScreen). */
+    callSid: String? = null,
+    callEvents: Flow<CallEvent> = emptyFlow(),
     onBack: () -> Unit = {}
 ) {
     var onCall by remember { mutableStateOf(true) }
@@ -82,11 +88,10 @@ fun TranscriptionScreen(
     var isEditingSpeech by remember { mutableStateOf(false) }
     var inputText by remember { mutableStateOf("") }
 
-    var twilioStatus by remember { mutableStateOf<String?>(null) }
-    var callSid by remember { mutableStateOf<String?>(null) }
+    var twilioStatus by remember { mutableStateOf<String?>("Connected") }
+    var isEndingCall by remember { mutableStateOf(false) }
 
     val displayName = contactName ?: "Contact"
-    val phoneNumber = contactPhoneNumber ?: "+17818690609"
     val callService = remember { CallService() }
     val coroutineScope = rememberCoroutineScope()
 
@@ -95,53 +100,29 @@ fun TranscriptionScreen(
     var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
 
     fun handleEndCall() {
-        val activeCallSid = callSid
-        val activePhoneNumber = phoneNumber
-
-        android.util.Log.d("TranscriptionScreen", "handleEndCall triggered. callSid=$activeCallSid, phone=$activePhoneNumber")
-
-        try {
-            val hangupMessage = org.json.JSONObject().apply {
-                put("event", "end_call")
-                put("action", "hangup")
-                put("type", "hangup")
-                put("text", "END_CALL")
-                if (!activeCallSid.isNullOrBlank()) {
-                    put("callSid", activeCallSid)
-                    put("sid", activeCallSid)
-                }
-                if (activePhoneNumber.isNotBlank()) {
-                    put("toPhoneNumber", activePhoneNumber)
-                }
-            }.toString()
-            webSocket?.send(hangupMessage)
-        } catch (e: Exception) {
-            // Ignore if websocket already closed
-        }
-
-        webSocket?.close(1000, "User ended call")
-        webSocket = null
-
-        coroutineScope.launch {
-            callService.endCall(callSid = activeCallSid, toPhoneNumber = activePhoneNumber)
-        }
-
-        twilioStatus = "Call Ended"
+        android.util.Log.d("TranscriptionScreen", "handleEndCall triggered. callSid=$callSid")
         onCall = false
-        onBack()
+        twilioStatus = "Call Ended"
+        val sid = callSid ?: return
+        isEndingCall = true
+        coroutineScope.launch {
+            val result = callService.endCall(sid)
+            if (!result.success) {
+                android.util.Log.e("TranscriptionScreen", "endCall failed: ${result.errorMessage}")
+                twilioStatus = "Couldn't hang up cleanly: ${result.errorMessage}"
+            }
+            isEndingCall = false
+        }
     }
 
-    // Initiate Twilio call via backend when screen is loaded
-    LaunchedEffect(phoneNumber) {
-        twilioStatus = "Initiating Twilio call to $phoneNumber..."
-        val result = callService.makeCall(toPhoneNumber = phoneNumber)
-        if (result.success) {
-            callSid = result.callSid
-            android.util.Log.d("TranscriptionScreen", "makeCall success! callSid=${result.callSid}")
-            twilioStatus = "Twilio Call Active (SID: ${result.callSid})"
-        } else {
-            android.util.Log.e("TranscriptionScreen", "makeCall failed: ${result.errorMessage}")
-            twilioStatus = "Twilio Status: ${result.errorMessage ?: "Disconnected"}"
+    // The other party hung up
+    LaunchedEffect(callSid) {
+        if (callSid == null) return@LaunchedEffect
+        callEvents.collect { event ->
+            if (event.callSid == callSid && event.isTerminal && onCall) {
+                onCall = false
+                twilioStatus = "$displayName hung up"
+            }
         }
     }
 
@@ -362,13 +343,14 @@ fun TranscriptionScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Call Ended",
+                    text = twilioStatus ?: "Call Ended",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                Button(onClick = onBack) {
-                    Text("Back to Home")
+                // Wait for the hang-up request to finish so leaving the screen doesn't cancel it
+                Button(onClick = onBack, enabled = !isEndingCall) {
+                    Text(if (isEndingCall) "Ending call…" else "Back to Home")
                 }
             }
         } else {

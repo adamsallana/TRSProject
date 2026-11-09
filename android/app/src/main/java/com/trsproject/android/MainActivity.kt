@@ -8,23 +8,35 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.trsproject.android.data.model.ActiveCall
+import com.trsproject.android.data.model.CallDirection
+import com.trsproject.android.network.CallEvent
+import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
 import com.trsproject.android.ui.screens.CaptionSettingsScreen
-import com.trsproject.android.data.model.Contact
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
+import com.trsproject.android.ui.screens.IncomingCallScreen
 import com.trsproject.android.ui.screens.NotificationsScreen
+import com.trsproject.android.ui.screens.OutgoingCallScreen
 import com.trsproject.android.ui.screens.PersonalInfoScreen
 import com.trsproject.android.ui.screens.SecuritySettingsScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,11 +50,57 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private val SIGNED_OUT_SCREENS = setOf(Screen.AUTH, Screen.ERROR)
+private val IN_CALL_SCREENS = setOf(Screen.OUTGOING_CALL, Screen.INCOMING_CALL, Screen.TRANSCRIPTION)
+
 @Composable
 fun MainApp() {
     var currentScreen by remember { mutableStateOf(Screen.AUTH) }
-    var selectedContactName by remember { mutableStateOf<String?>(null) }
-    var selectedContactPhoneNumber by remember { mutableStateOf<String?>(null) }
+    var activeCall by remember { mutableStateOf<ActiveCall?>(null) }
+
+    val callService = remember { CallService() }
+    val appScope = rememberCoroutineScope()
+    // Call events from the server, re-emitted to whichever call screen is showing
+    val callEvents = remember { MutableSharedFlow<CallEvent>(extraBufferCapacity = 32) }
+    val isSignedIn = currentScreen !in SIGNED_OUT_SCREENS
+
+    fun endCallAndGoHome() {
+        activeCall = null
+        currentScreen = Screen.HOME
+    }
+
+    // One app-wide socket for call events while signed in, so incoming calls ring on any screen.
+    // Reconnects after a short delay if the connection drops.
+    LaunchedEffect(isSignedIn) {
+        if (!isSignedIn) return@LaunchedEffect
+        callService.callEvents()
+            .retryWhen { cause, _ ->
+                android.util.Log.w("MainApp", "Call event socket dropped, reconnecting: ${cause.message}")
+                delay(3000)
+                true
+            }
+            .collect { event ->
+                val isNewIncoming = event.direction == "incoming" && event.status == "ringing"
+                if (isNewIncoming) {
+                    if (currentScreen in IN_CALL_SCREENS) {
+                        // Already on a call: reject the new one so the caller isn't left on hold
+                        if (activeCall?.callSid != event.callSid) {
+                            launch { callService.declineIncomingCall(event.callSid) }
+                        }
+                    } else {
+                        val number = event.phoneNumber.orEmpty()
+                        activeCall = ActiveCall(
+                            direction = CallDirection.INCOMING,
+                            name = event.name ?: number.ifBlank { "Unknown caller" },
+                            phoneNumber = number,
+                            callSid = event.callSid
+                        )
+                        currentScreen = Screen.INCOMING_CALL
+                    }
+                }
+                callEvents.emit(event)
+            }
+    }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         when (currentScreen) {
@@ -55,23 +113,74 @@ fun MainApp() {
             Screen.HOME -> HomeScreen(
                 modifier = Modifier.padding(innerPadding),
                 onCallClick = { contact ->
-                    selectedContactName = contact.name
-                    selectedContactPhoneNumber = contact.phoneNumber
-                    currentScreen = Screen.TRANSCRIPTION
+                    val number = contact.phoneNumber.orEmpty()
+                    activeCall = ActiveCall(
+                        direction = CallDirection.OUTGOING,
+                        name = contact.name?.ifBlank { null } ?: number,
+                        phoneNumber = number
+                    )
+                    currentScreen = Screen.OUTGOING_CALL
                 },
                 onAccountClick = {
                     currentScreen = Screen.ACCOUNT
+                },
+                onTestIncomingCall = {
+                    appScope.launch { callService.triggerTestIncomingCall() }
                 },
                 onSignOut = {
                     currentScreen = Screen.AUTH
                 }
             )
 
+            Screen.OUTGOING_CALL -> {
+                val call = activeCall
+                if (call == null) {
+                    LaunchedEffect(Unit) { endCallAndGoHome() }
+                } else {
+                    OutgoingCallScreen(
+                        contactName = call.name,
+                        phoneNumber = call.phoneNumber,
+                        callEvents = callEvents,
+                        callService = callService,
+                        modifier = Modifier.padding(innerPadding),
+                        onConnected = { sid ->
+                            activeCall = call.copy(callSid = sid)
+                            currentScreen = Screen.TRANSCRIPTION
+                        },
+                        onFinished = { endCallAndGoHome() }
+                    )
+                }
+            }
+
+            Screen.INCOMING_CALL -> {
+                val call = activeCall
+                val sid = call?.callSid
+                if (call == null || sid == null) {
+                    LaunchedEffect(Unit) { endCallAndGoHome() }
+                } else {
+                    // key on sid so a new incoming call gets fresh screen state
+                    key(sid) {
+                        IncomingCallScreen(
+                            callSid = sid,
+                            callerName = call.name,
+                            phoneNumber = call.phoneNumber,
+                            callEvents = callEvents,
+                            callService = callService,
+                            modifier = Modifier.padding(innerPadding),
+                            onAccepted = { currentScreen = Screen.TRANSCRIPTION },
+                            onFinished = { endCallAndGoHome() }
+                        )
+                    }
+                }
+            }
+
             Screen.TRANSCRIPTION -> TranscriptionScreen(
-                contactName = selectedContactName,
-                contactPhoneNumber = selectedContactPhoneNumber,
+                contactName = activeCall?.name,
+                contactPhoneNumber = activeCall?.phoneNumber,
+                callSid = activeCall?.callSid,
+                callEvents = callEvents,
                 modifier = Modifier.padding(innerPadding),
-                onBack = { currentScreen = Screen.HOME }
+                onBack = { endCallAndGoHome() }
             )
 
             Screen.ACCOUNT -> AccountScreen(
