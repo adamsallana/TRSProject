@@ -95,7 +95,12 @@ data class CallEvent(
     val type: String = "call_event"
 )
 
-private data class TrackedCall(val direction: String, val phoneNumber: String?)
+private data class TrackedCall(
+    val direction: String,
+    val phoneNumber: String?,
+    /** Incoming call the app user has accepted (no longer on hold). */
+    val accepted: Boolean = false
+)
 
 // encodeDefaults so the `type` discriminator is always sent
 private val wireJson = Json {
@@ -138,9 +143,13 @@ private enum class CaptionMode { REALTIME, GATHER }
 private val captionMode: CaptionMode =
     if (System.getenv("CAPTION_MODE").equals("gather", ignoreCase = true)) CaptionMode.GATHER else CaptionMode.REALTIME
 
-// Which audio track is the remote party. For calls on a Twilio number (REST-placed or inbound),
-// the phone party's audio arrives at Twilio on the inbound track.
-private val transcriptionTrack: String = System.getenv("TRANSCRIPTION_TRACK")?.takeIf { it.isNotBlank() } ?: "inbound_track"
+// Which audio tracks to caption. For calls on a Twilio number (REST-placed or inbound), the phone
+// party's audio arrives at Twilio on the inbound track; the outbound track is what Twilio plays to
+// them, i.e. the app user's mic audio relayed through the media stream (see CallAudioBridge.kt).
+// Captioning both tracks gives captions for both sides of the conversation.
+private const val INBOUND_TRACK = "inbound_track"
+private const val OUTBOUND_TRACK = "outbound_track"
+private val transcriptionTrack: String = System.getenv("TRANSCRIPTION_TRACK")?.takeIf { it.isNotBlank() } ?: "both_tracks"
 
 // speechTimeout must be an integer (not "auto") when speechModel is set
 private val GATHER_TWIML = """
@@ -165,6 +174,9 @@ private val HOLD_TWIML = """
     </Response>
 """.trimIndent()
 
+// Starts captioning, then connects the bidirectional media stream that carries the app user's
+// mic audio into the call. <Connect> blocks for the rest of the call; if the stream ends early
+// (e.g. server restart) the call falls through to the hold loop, and the transcription keeps going.
 private val REALTIME_TWIML = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
@@ -176,7 +188,7 @@ private val REALTIME_TWIML = """
                            languageCode="en-US"
                            enableAutomaticPunctuation="true" />
         </Start>
-        <Pause length="3600"/>
+        ${connectStreamTwiml(publicBaseUrl)}
         <Redirect method="POST">/api/twiml/hold</Redirect>
     </Response>
 """.trimIndent()
@@ -214,26 +226,37 @@ private class UtteranceTracker {
     }
 }
 
+/** Utterance trackers keyed by "callSid|track", so each side of the call has its own bubbles. */
 private val utterances = ConcurrentHashMap<String, UtteranceTracker>()
 
-private fun utteranceTracker(callSid: String) = utterances.getOrPut(callSid) { UtteranceTracker() }
+private fun utteranceTracker(callSid: String, track: String) =
+    utterances.getOrPut("$callSid|$track") { UtteranceTracker() }
 
-/** Broadcasts one segment of the remote party's speech. Blank finals just close the utterance. */
-private suspend fun broadcastRemoteSpeech(
+private fun forgetUtterances(callSid: String) {
+    utterances.keys.removeIf { it.startsWith("$callSid|") }
+}
+
+/**
+ * Broadcasts one segment of speech on [track]. The outbound track is the app user's own voice
+ * (relayed into the call), so it's labeled as "Me". Blank finals just close the utterance.
+ */
+private suspend fun broadcastSpeech(
     callSid: String,
+    track: String,
     text: String?,
     isFinal: Boolean,
     seq: Long?,
     resetSequenceOnFinal: Boolean = false
 ) {
-    val id = utteranceTracker(callSid).idFor(seq, isFinal, resetSequenceOnFinal) ?: return
+    val id = utteranceTracker(callSid, track).idFor(seq, isFinal, resetSequenceOnFinal) ?: return
     if (text.isNullOrBlank()) return
+    val isMe = track == OUTBOUND_TRACK
     broadcastTranscript(
         TranscriptMessage(
             id = id,
-            senderName = "Contact",
+            senderName = if (isMe) "Me" else "Contact",
             text = text.trim(),
-            isMe = false,
+            isMe = isMe,
             isFinal = isFinal
         )
     )
@@ -317,6 +340,10 @@ fun Application.module() {
     initTwilio()
 
     routing {
+        // App mic audio -> phone call (see CallAudioBridge.kt)
+        twilioMediaStreamRoute()
+        callAudioRoute()
+
         // WebSocket endpoint for live captions and call events
         webSocket("/transcribe") {
             val contactName = call.request.queryParameters["contact"] ?: "Contact"
@@ -325,10 +352,8 @@ fun Application.module() {
             try {
                 for (frame in incoming) {
                     when (frame) {
-                        is Frame.Binary -> {
-                            frame.readBytes()
-                            // Binary mic audio frames received from Android client (unused for now)
-                        }
+                        // Mic audio goes over /call-audio instead (see CallAudioBridge.kt)
+                        is Frame.Binary -> Unit
                         is Frame.Text -> {
                             val text = frame.readText()
                             if (text.isBlank()) continue
@@ -396,7 +421,8 @@ fun Application.module() {
                         }
                     }
                     val isFinal = params["Final"]?.equals("true", ignoreCase = true) ?: true
-                    broadcastRemoteSpeech(callSid, text, isFinal, params["SequenceId"]?.toLongOrNull())
+                    val track = params["Track"]?.takeIf { it.isNotBlank() } ?: INBOUND_TRACK
+                    broadcastSpeech(callSid, track, text, isFinal, params["SequenceId"]?.toLongOrNull())
                     if (isFinal) {
                         println(">>> [SERVER] TRANSCRIPT (track=${params["Track"]}): '$text'")
                     }
@@ -407,12 +433,13 @@ fun Application.module() {
 
                 "transcription-stopped" -> {
                     println(">>> [SERVER] REAL-TIME TRANSCRIPTION STOPPED: sid=$callSid")
-                    callSid?.let { utterances.remove(it) }
+                    callSid?.let { forgetUtterances(it) }
                 }
 
                 "transcription-error" -> {
                     println(">>> [SERVER] REAL-TIME TRANSCRIPTION ERROR: sid=$callSid code=${params["TranscriptionErrorCode"]} error=${params["TranscriptionError"]}")
-                    // Keep captions working: switch this call to the Gather loop
+                    // Keep the other party's captions working: switch this call to the Gather loop.
+                    // Note this replaces the TwiML, which also ends the mic media stream.
                     if (callSid != null && !callSid.startsWith(TEST_SID_PREFIX) && initTwilio()) {
                         try {
                             Call.updater(callSid)
@@ -436,8 +463,9 @@ fun Application.module() {
             val params = call.receiveParameters()
             val callSid = params["CallSid"]
             if (callSid != null) {
-                broadcastRemoteSpeech(
+                broadcastSpeech(
                     callSid,
+                    INBOUND_TRACK,
                     params["UnstableSpeechResult"],
                     isFinal = false,
                     seq = params["SequenceNumber"]?.toLongOrNull()
@@ -455,7 +483,7 @@ fun Application.module() {
 
             if (callSid != null) {
                 // No sequence number on the final callback; it always closes the current utterance
-                broadcastRemoteSpeech(callSid, speechResult, isFinal = true, seq = null, resetSequenceOnFinal = true)
+                broadcastSpeech(callSid, INBOUND_TRACK, speechResult, isFinal = true, seq = null, resetSequenceOnFinal = true)
             }
 
             // Continue gathering speech without hanging up
@@ -481,7 +509,7 @@ fun Application.module() {
                 broadcastCallEvent(CallEvent(callSid, direction, status, phoneNumber))
                 if (status in TERMINAL_STATUSES) {
                     trackedCalls.remove(callSid)
-                    utterances.remove(callSid)
+                    forgetUtterances(callSid)
                 }
             }
             call.respond(HttpStatusCode.NoContent)
@@ -506,6 +534,13 @@ fun Application.module() {
         post("/api/incoming-call/timeout") {
             val params = call.receiveParameters()
             val callSid = params["CallSid"]
+            // Accepting a held call interrupts its <Pause>, and Twilio can still follow the hold
+            // <Redirect> to here even though the call has moved on. Don't treat that as a missed call.
+            if (!callSid.isNullOrBlank() && trackedCalls[callSid]?.accepted == true) {
+                println(">>> [SERVER] IGNORING HOLD TIMEOUT FOR ACCEPTED CALL: sid=$callSid")
+                call.respondText(HOLD_TWIML, ContentType.Application.Xml)
+                return@post
+            }
             println(">>> [SERVER] INCOMING CALL TIMED OUT: sid=$callSid")
             if (!callSid.isNullOrBlank()) {
                 val tracked = trackedCalls.remove(callSid)
@@ -522,9 +557,13 @@ fun Application.module() {
                 return@post
             }
             val phoneNumber = trackedCalls[callSid]?.phoneNumber
+            // Mark accepted before redirecting, so the hold's timeout redirect (which can race the
+            // update) is ignored
+            trackedCalls[callSid] = TrackedCall("incoming", phoneNumber, accepted = true)
 
             if (!callSid.startsWith(TEST_SID_PREFIX)) {
                 if (!initTwilio()) {
+                    trackedCalls[callSid] = TrackedCall("incoming", phoneNumber)
                     call.respond(SimpleResponse(status = "error", error = MISSING_CREDENTIALS))
                     return@post
                 }
@@ -535,6 +574,7 @@ fun Application.module() {
                         .update()
                 } catch (e: Exception) {
                     println(">>> [SERVER] FAILED TO ACCEPT INCOMING CALL: ${e.message}")
+                    trackedCalls[callSid] = TrackedCall("incoming", phoneNumber)
                     call.respond(SimpleResponse(status = "error", error = "Failed to accept call: ${e.message}"))
                     return@post
                 }
