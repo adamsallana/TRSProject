@@ -12,6 +12,7 @@ import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.util.Log
 
 object SupabaseService {
 
@@ -27,26 +28,40 @@ object SupabaseService {
     }
 
     // --- User Profile Operations ---
-    suspend fun fetchUserProfile(userId: String): UserProfile = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["profiles"]
-                .select { filter { eq("id", userId) } }
-                .decodeSingle<UserProfile>()
-        } catch (e: Exception) {
-            // Fallback default profile if network/tables not initialized yet
-            UserProfile(id = userId)
-        }
-    }
 
-    suspend fun updateUserProfile(profile: UserProfile): Boolean = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["profiles"]
-                .upsert(profile)
-            true
-        } catch (e: Exception) {
-            false
+    suspend fun fetchUserProfile(userId: String): UserProfile =
+        withContext(Dispatchers.IO) {
+            try {
+                client.postgrest["profiles"]
+                    .select {
+                        filter {
+                            eq("id", userId)
+                        }
+                    }
+                    .decodeSingle<UserProfile>()
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to fetch user profile", e)
+                throw e
+            }
         }
-    }
+
+
+
+    suspend fun updateUserProfile(profile: UserProfile): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                require(profile.id.isNotBlank()) {
+                    "Cannot save a profile without a user ID"
+                }
+
+                client.postgrest["profiles"].upsert(profile)
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to save user profile", e)
+                false
+            }
+        }
+
 
     // --- Caption Preferences Operations ---
     suspend fun fetchCaptionPreferences(userId: String): CaptionPreferences = withContext(Dispatchers.IO) {
@@ -59,15 +74,22 @@ object SupabaseService {
         }
     }
 
-    suspend fun updateCaptionPreferences(prefs: CaptionPreferences): Boolean = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["caption_settings"]
-                .upsert(prefs)
-            true
-        } catch (e: Exception) {
-            false
+
+    suspend fun updateCaptionPreferences(prefs: CaptionPreferences): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                require(prefs.userId.isNotBlank()) {
+                    "Cannot save caption settings without a user ID"
+                }
+
+                client.postgrest["caption_settings"].upsert(prefs)
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to save caption preferences", e)
+                false
+            }
         }
-    }
+
 
     // --- Notification Preferences Operations ---
     suspend fun fetchNotificationPreferences(userId: String): NotificationPreferences = withContext(Dispatchers.IO) {
@@ -80,15 +102,22 @@ object SupabaseService {
         }
     }
 
-    suspend fun updateNotificationPreferences(prefs: NotificationPreferences): Boolean = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["notification_settings"]
-                .upsert(prefs)
-            true
-        } catch (e: Exception) {
-            false
+
+    suspend fun updateNotificationPreferences(prefs: NotificationPreferences): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                require(prefs.userId.isNotBlank()) {
+                    "Cannot save notification settings without a user ID"
+                }
+
+                client.postgrest["notification_settings"].upsert(prefs)
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to save notification preferences", e)
+                false
+            }
         }
-    }
+
 
     // --- Security Preferences Operations ---
     suspend fun fetchSecurityPreferences(userId: String): SecurityPreferences = withContext(Dispatchers.IO) {
@@ -101,13 +130,20 @@ object SupabaseService {
         }
     }
 
-    suspend fun updateSecurityPreferences(prefs: SecurityPreferences): Boolean = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["security_settings"]
-                .upsert(prefs)
-            true
-        } catch (e: Exception) {
-            false
+
+    suspend fun updateSecurityPreferences(prefs: SecurityPreferences): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                require(prefs.userId.isNotBlank()) {
+                    "Cannot save security settings without a user ID"
+                }
+
+                client.postgrest["security_settings"].upsert(prefs)
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to save security preferences", e)
+                false
+            }
         }
-    }
+
 }

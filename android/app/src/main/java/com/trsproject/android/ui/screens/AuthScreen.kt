@@ -28,6 +28,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.providers.builtin.Email
+import com.trsproject.android.data.remote.SupabaseService
+import kotlinx.coroutines.launch
 
 @Composable
 fun AuthScreen(
@@ -42,16 +47,73 @@ fun AuthScreen(
     var name by remember { mutableStateOf("") }
 
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
+
 
     fun processAuthentication() {
-        if (DemoErrorEvaluator.isWrongCredentials(email, password)) {
-            onSignInError()
-        } else {
-            val action = if (isSignUp) "Signed Up" else "Signed In"
-            Toast.makeText(context, "$action successfully", Toast.LENGTH_SHORT).show()
-            onSignInSuccess()
+        if (email.isBlank() || password.isBlank()) {
+            Toast.makeText(
+                context,
+                "Please enter your email and password",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        if (isSignUp && password != confirmPassword) {
+            Toast.makeText(
+                context,
+                "Passwords do not match",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        if (isLoading) return
+
+        isLoading = true
+
+        coroutineScope.launch {
+            try {
+                if (isSignUp) {
+                    SupabaseService.client.auth.signUpWith(Email) {
+                        this.email = email.trim()
+                        this.password = password
+                    }
+
+                    Toast.makeText(
+                        context,
+                        "Account created! Check your email for verification if required.",
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                    // A signup may require email verification before login.
+                    if (SupabaseService.client.auth.currentUserOrNull() != null) {
+                        onSignInSuccess()
+                    } else {
+                        isSignUp = false
+                    }
+                } else {
+                    SupabaseService.client.auth.signInWith(Email) {
+                        this.email = email.trim()
+                        this.password = password
+                    }
+
+                    onSignInSuccess()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    e.message ?: "Authentication failed. Please try again.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isLoading = false
+            }
         }
     }
+
 
     Column(
         modifier = modifier
@@ -123,17 +185,26 @@ fun AuthScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+
         Button(
             onClick = { processAuthentication() },
+            enabled = !isLoading,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(50.dp)
         ) {
             Text(
-                text = if (isSignUp) "Sign Up" else "Sign In",
+                text = if (isLoading) {
+                    "Please wait..."
+                } else if (isSignUp) {
+                    "Sign Up"
+                } else {
+                    "Sign In"
+                },
                 style = MaterialTheme.typography.titleMedium
             )
         }
+
 
         Spacer(modifier = Modifier.height(16.dp))
 

@@ -69,13 +69,22 @@ fun NotificationsScreen(
             )
             val success = SupabaseService.updateNotificationPreferences(updated)
             isSaving = false
+
             if (success) {
-                Toast.makeText(context, "Notification settings saved to Supabase!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    "Notification settings saved successfully!",
+                    Toast.LENGTH_SHORT
+                ).show()
                 onBack()
             } else {
-                Toast.makeText(context, "Saved locally (Supabase offline)", Toast.LENGTH_SHORT).show()
-                onBack()
+                Toast.makeText(
+                    context,
+                    "Unable to save notification settings. Please try again.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
+
         }
     }
 

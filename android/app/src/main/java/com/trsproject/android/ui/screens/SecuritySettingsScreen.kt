@@ -1,5 +1,7 @@
 package com.trsproject.android.ui.screens
 
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.providers.builtin.Email
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -66,29 +68,83 @@ fun SecuritySettingsScreen(
     var optionalPin by remember { mutableStateOf(initialPreferences.optionalPin) }
     var isSaving by remember { mutableStateOf(false) }
 
+
     fun saveSecurity() {
-        if (newPassword.isNotEmpty() && newPassword != confirmPassword) {
-            Toast.makeText(context, "New passwords do not match", Toast.LENGTH_SHORT).show()
+        if (currentPassword.isBlank() || newPassword.isBlank()) {
+            Toast.makeText(
+                context,
+                "Enter your current and new passwords.",
+                Toast.LENGTH_SHORT
+            ).show()
             return
         }
 
+        if (newPassword != confirmPassword) {
+            Toast.makeText(
+                context,
+                "New passwords do not match.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        if (newPassword.length < 8) {
+            Toast.makeText(
+                context,
+                "New password must be at least 8 characters.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        if (isSaving) return
         isSaving = true
+
         coroutineScope.launch {
-            val updated = SecurityPreferences(
-                pinLockEnabled = pinLockEnabled,
-                optionalPin = optionalPin
-            )
-            val success = SupabaseService.updateSecurityPreferences(updated)
-            isSaving = false
-            if (success) {
-                Toast.makeText(context, "Security preferences saved to Supabase!", Toast.LENGTH_SHORT).show()
+            try {
+                val auth = SupabaseService.client.auth
+                val email = auth.currentUserOrNull()?.email
+
+                if (email.isNullOrBlank()) {
+                    throw IllegalStateException(
+                        "You must be signed in to change your password."
+                    )
+                }
+
+                // Verify the existing password before changing it.
+                auth.signInWith(Email) {
+                    this.email = email
+                    password = currentPassword
+                }
+
+                // Update the password using Supabase Auth.
+                auth.updateUser {
+                    password = newPassword
+                }
+
+                Toast.makeText(
+                    context,
+                    "Password updated successfully!",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                currentPassword = ""
+                newPassword = ""
+                confirmPassword = ""
+
                 onBack()
-            } else {
-                Toast.makeText(context, "Saved locally (Supabase offline)", Toast.LENGTH_SHORT).show()
-                onBack()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    e.message ?: "Unable to update password.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isSaving = false
             }
         }
     }
+
 
     Scaffold(
         topBar = {

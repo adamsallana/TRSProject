@@ -43,6 +43,8 @@ import com.trsproject.android.data.model.UserProfile
 import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import kotlinx.coroutines.launch
+import io.github.jan.supabase.auth.auth
+import androidx.compose.runtime.LaunchedEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,25 +63,69 @@ fun PersonalInfoScreen(
     var trsRelayNumber by remember { mutableStateOf(initialProfile.trsRelayNumber) }
     var isSaving by remember { mutableStateOf(false) }
 
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        val user = SupabaseService.client.auth.currentUserOrNull()
+
+        if (user == null) {
+            isLoading = false
+            return@LaunchedEffect
+        }
+
+        val profile = SupabaseService.fetchUserProfile(user.id)
+
+        fullName = profile.fullName
+        email = profile.email.ifBlank { user.email ?: "" }
+        phoneNumber = profile.phoneNumber
+        trsRelayNumber = profile.trsRelayNumber
+
+        isLoading = false
+    }
+
+
     fun saveInfo() {
         isSaving = true
         coroutineScope.launch {
+
+            val userId = SupabaseService.client.auth.currentUserOrNull()?.id
+
+            if (userId == null) {
+                isSaving = false
+                Toast.makeText(
+                    context,
+                    "Please sign in before saving your profile.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+
             val updated = UserProfile(
-                id = initialProfile.id,
+                id = userId,
                 fullName = fullName,
                 email = email,
                 phoneNumber = phoneNumber,
                 trsRelayNumber = trsRelayNumber
             )
+
             val success = SupabaseService.updateUserProfile(updated)
             isSaving = false
+
             if (success) {
-                Toast.makeText(context, "Personal information saved to Supabase!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    "Personal information saved successfully!",
+                    Toast.LENGTH_SHORT
+                ).show()
                 onBack()
             } else {
-                Toast.makeText(context, "Saved locally (Supabase offline)", Toast.LENGTH_SHORT).show()
-                onBack()
+                Toast.makeText(
+                    context,
+                    "Unable to save personal information. Please try again.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
+
         }
     }
 
@@ -154,7 +200,7 @@ fun PersonalInfoScreen(
 
             Button(
                 onClick = { saveInfo() },
-                enabled = !isSaving,
+                enabled = !isSaving && !isLoading,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp)

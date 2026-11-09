@@ -81,13 +81,22 @@ fun CaptionSettingsScreen(
             )
             val success = SupabaseService.updateCaptionPreferences(updated)
             isSaving = false
+
             if (success) {
-                Toast.makeText(context, "Caption settings synced to Supabase!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    "Caption settings saved successfully!",
+                    Toast.LENGTH_SHORT
+                ).show()
                 onBack()
             } else {
-                Toast.makeText(context, "Saved locally (Supabase offline)", Toast.LENGTH_SHORT).show()
-                onBack()
+                Toast.makeText(
+                    context,
+                    "Unable to save caption settings. Please try again.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
+
         }
     }
 
