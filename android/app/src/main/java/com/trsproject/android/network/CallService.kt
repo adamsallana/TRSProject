@@ -16,8 +16,29 @@ import org.json.JSONObject
 data class TwilioCallResult(
     val success: Boolean,
     val callSid: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /**
+     * The request timed out after being sent, so the server may still have acted on it
+     * (e.g. placed the call). Callers should watch call events rather than assume failure.
+     */
+    val mayHaveSucceeded: Boolean = false
 )
+
+/** Last 10 digits, so "+1 (781) 869-0609" and "7818690609" compare equal. */
+internal fun normalizePhoneNumber(number: String?): String =
+    number.orEmpty().filter { it.isDigit() }.takeLast(10)
+
+internal fun phoneNumbersMatch(a: String?, b: String?): Boolean {
+    val na = normalizePhoneNumber(a)
+    return na.isNotEmpty() && na == normalizePhoneNumber(b)
+}
+
+/**
+ * Like [JSONObject.optString], but returns null for missing, JSON-null, or blank values.
+ * (org.json's optString turns a JSON null into the literal string "null".)
+ */
+internal fun JSONObject.optStringOrNull(key: String): String? =
+    if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() && it != "null" }
 
 /**
  * Call lifecycle event pushed by the server over the /transcribe WebSocket.
@@ -41,7 +62,15 @@ data class CallEvent(
 class CallService(private val baseUrl: String = getHttpBaseUrl()) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        // Generous: the hosted server can take a while to wake up, and Twilio API calls are slow
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
+    // WebSockets can sit idle for long stretches (no one speaking), so no read timeout;
+    // pings keep the connection alive and detect dead sockets instead.
+    private val wsClient = client.newBuilder()
+        .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .pingInterval(20, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     /** The configured base URL, plus the emulator loopback alternative when running locally. */
@@ -78,6 +107,9 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                 }
             } catch (e: IllegalStateException) {
                 throw e // Server answered with an error; don't retry on another host
+            } catch (e: java.net.SocketTimeoutException) {
+                // The request may have reached the server; retrying could e.g. place a second call
+                throw e
             } catch (e: Exception) {
                 lastError = e
             }
@@ -131,6 +163,9 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                 android.util.Log.e("CallService", "makeCall response error: $error, body=$json")
                 TwilioCallResult(success = false, errorMessage = error ?: "Server returned success but missing CallSid")
             }
+        } catch (e: java.net.SocketTimeoutException) {
+            android.util.Log.w("CallService", "makeCall timed out; the call may still have been placed")
+            TwilioCallResult(success = false, errorMessage = "The server took too long to respond", mayHaveSucceeded = true)
         } catch (e: Exception) {
             TwilioCallResult(success = false, errorMessage = e.localizedMessage ?: "Network error occurred")
         }
@@ -167,6 +202,7 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
     fun connectTranscriptionWebSocket(
         contactName: String,
         onCallEvent: (CallEvent) -> Unit = {},
+        onConnected: () -> Unit = {},
         onDisconnected: (Throwable?) -> Unit = {},
         onTranscriptReceived: (CaptionMessage) -> Unit = {}
     ): okhttp3.WebSocket {
@@ -179,7 +215,11 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         val wsUrl = "$wsBaseUrl/transcribe?contact=$encodedContact"
 
         val request = Request.Builder().url(wsUrl).build()
-        return client.newWebSocket(request, object : okhttp3.WebSocketListener() {
+        return wsClient.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                onConnected()
+            }
+
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 val json = try {
                     JSONObject(text)
@@ -206,8 +246,8 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                                     callSid = callSid,
                                     direction = json.optString("direction", "outgoing"),
                                     status = status,
-                                    phoneNumber = json.optString("phoneNumber").ifBlank { null },
-                                    name = json.optString("name").ifBlank { null }
+                                    phoneNumber = json.optStringOrNull("phoneNumber"),
+                                    name = json.optStringOrNull("name")
                                 )
                             )
                         }
@@ -215,7 +255,7 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
 
                     "transcript" -> {
                         val id = json.optInt("id", System.currentTimeMillis().toInt())
-                        val senderName = json.optString("senderName", contactName)
+                        val senderName = json.optStringOrNull("senderName") ?: contactName
                         val transcriptText = json.optString("text", "")
                         val isMe = json.optBoolean("isMe", false) || senderName.equals("Me", ignoreCase = true)
                         if (transcriptText.isNotBlank()) {
@@ -224,7 +264,8 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                                     id = id,
                                     senderName = senderName,
                                     text = transcriptText,
-                                    isMe = isMe
+                                    isMe = isMe,
+                                    isFinal = json.optBoolean("isFinal", true)
                                 )
                             )
                         }

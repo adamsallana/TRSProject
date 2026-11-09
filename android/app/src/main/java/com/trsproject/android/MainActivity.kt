@@ -18,8 +18,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trsproject.android.data.model.ActiveCall
 import com.trsproject.android.data.model.CallDirection
+import com.trsproject.android.data.remote.SupabaseService
+import io.github.jan.supabase.auth.auth
 import com.trsproject.android.network.CallEvent
 import com.trsproject.android.network.CallService
+import com.trsproject.android.network.phoneNumbersMatch
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
@@ -47,6 +50,22 @@ class MainActivity : ComponentActivity() {
                 MainApp()
             }
         }
+    }
+}
+
+/** Name of the signed-in user's saved contact with [number], or null if none / lookup fails. */
+private suspend fun lookupContactName(number: String): String? {
+    return try {
+        val userId = SupabaseService.client.auth.currentUserOrNull()?.id ?: return null
+        SupabaseService.fetchContacts(userId)
+            // fetchContacts returns a placeholder "Contact" when the list is empty or fails; skip it
+            .filterNot { it.id == "1" && it.name == "Contact" }
+            .firstOrNull { phoneNumbersMatch(it.phoneNumber, number) }
+            ?.name
+            ?.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+        android.util.Log.w("MainApp", "Contact lookup failed: ${e.message}")
+        null
     }
 }
 
@@ -96,6 +115,16 @@ fun MainApp() {
                             callSid = event.callSid
                         )
                         currentScreen = Screen.INCOMING_CALL
+                        // Show the saved contact's name if we have this number
+                        if (event.name == null && number.isNotBlank()) {
+                            launch {
+                                val savedName = lookupContactName(number) ?: return@launch
+                                val current = activeCall
+                                if (current?.callSid == event.callSid) {
+                                    activeCall = current.copy(name = savedName)
+                                }
+                            }
+                        }
                     }
                 }
                 callEvents.emit(event)

@@ -1,6 +1,8 @@
 package com.trsproject.android
 
 import com.trsproject.android.ui.screens.CaptionMessage
+import com.trsproject.android.ui.screens.mergeCaption
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,6 +31,38 @@ class TranscriptionDeduplicationUnitTest {
             existing.id == callerMsg.id || (callerMsg.isMe && existing.isMe && existing.text == callerMsg.text)
         }
         assertFalse("Caller message with different sender should not be duplicate", isCallerDuplicate)
+    }
+
+    @Test
+    fun mergeCaption_dropsEchoOfOwnMessage() {
+        val mine = CaptionMessage(id = 100, senderName = "Me", text = "Hello", isMe = true)
+        val merged = mergeCaption(listOf(mine), mine.copy())
+        assertEquals(1, merged.size)
+    }
+
+    @Test
+    fun mergeCaption_interimUpdatesReplaceSameBubble() {
+        var captions = listOf<CaptionMessage>()
+        captions = mergeCaption(captions, CaptionMessage(5, "Bob", "hel", isMe = false, isFinal = false))
+        captions = mergeCaption(captions, CaptionMessage(5, "Bob", "hello the", isMe = false, isFinal = false))
+        captions = mergeCaption(captions, CaptionMessage(5, "Bob", "Hello there.", isMe = false, isFinal = true))
+        assertEquals(1, captions.size)
+        assertEquals("Hello there.", captions[0].text)
+        assertTrue(captions[0].isFinal)
+    }
+
+    @Test
+    fun mergeCaption_lateInterimDoesNotOverwriteFinal() {
+        val final = CaptionMessage(5, "Bob", "Hello there.", isMe = false, isFinal = true)
+        val merged = mergeCaption(listOf(final), CaptionMessage(5, "Bob", "hello", isMe = false, isFinal = false))
+        assertEquals("Hello there.", merged.single().text)
+    }
+
+    @Test
+    fun mergeCaption_newUtteranceAppends() {
+        val first = CaptionMessage(5, "Bob", "Hi.", isMe = false)
+        val merged = mergeCaption(listOf(first), CaptionMessage(6, "Bob", "How are", isMe = false, isFinal = false))
+        assertEquals(2, merged.size)
     }
 
     @Test

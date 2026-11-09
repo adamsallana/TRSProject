@@ -29,6 +29,9 @@ import io.ktor.websocket.readText
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.URI
 import java.util.Collections
 import java.util.UUID
@@ -71,6 +74,8 @@ data class TranscriptMessage(
     val senderName: String,
     val text: String,
     val isMe: Boolean,
+    /** False for interim text that a later message with the same id will replace. */
+    val isFinal: Boolean = true,
     val type: String = "transcript"
 )
 
@@ -109,13 +114,118 @@ private val TERMINAL_STATUSES = setOf("completed", "busy", "no-answer", "cancele
 
 private const val TEST_SID_PREFIX = "TEST-"
 
+/**
+ * How the remote party's speech is captioned:
+ * - REALTIME (default): Twilio Real-Time Transcription streams interim + final text for the
+ *   whole call with no gaps between turns.
+ * - GATHER: the older <Gather> loop (one request per utterance). Set CAPTION_MODE=gather to use it.
+ *   Also used automatically if a real-time transcription session reports an error.
+ */
+private enum class CaptionMode { REALTIME, GATHER }
+
+private val captionMode: CaptionMode =
+    if (System.getenv("CAPTION_MODE").equals("gather", ignoreCase = true)) CaptionMode.GATHER else CaptionMode.REALTIME
+
+// Which audio track is the remote party. For calls on a Twilio number (REST-placed or inbound),
+// the phone party's audio arrives at Twilio on the inbound track.
+private val transcriptionTrack: String = System.getenv("TRANSCRIPTION_TRACK")?.takeIf { it.isNotBlank() } ?: "inbound_track"
+
+// speechTimeout must be an integer (not "auto") when speechModel is set
 private val GATHER_TWIML = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
-        <Gather input="speech" action="/api/twilio-speech-callback" method="POST" speechTimeout="auto" timeout="5" />
-        <Redirect>/api/twiml</Redirect>
+        <Gather input="speech" action="/api/twilio-speech-callback" method="POST"
+                speechTimeout="1" timeout="5" speechModel="phone_call" enhanced="true"
+                actionOnEmptyResult="false"
+                partialResultCallback="$publicBaseUrl/api/twilio-speech-partial"
+                partialResultCallbackMethod="POST" />
+        <Redirect method="POST">/api/twiml/gather</Redirect>
     </Response>
 """.trimIndent()
+
+// Keeps the call open while the real-time transcription runs. Long pauses rather than frequent
+// redirects; the session runs until the call ends.
+private val HOLD_TWIML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Pause length="3600"/>
+        <Redirect method="POST">/api/twiml/hold</Redirect>
+    </Response>
+""".trimIndent()
+
+private val REALTIME_TWIML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Response>
+        <Start>
+            <Transcription name="captions"
+                           statusCallbackUrl="$publicBaseUrl/api/transcription-callback"
+                           track="$transcriptionTrack"
+                           partialResults="true"
+                           languageCode="en-US"
+                           enableAutomaticPunctuation="true" />
+        </Start>
+        <Pause length="3600"/>
+        <Redirect method="POST">/api/twiml/hold</Redirect>
+    </Response>
+""".trimIndent()
+
+private fun callTwiml(): String = when (captionMode) {
+    CaptionMode.REALTIME -> REALTIME_TWIML
+    CaptionMode.GATHER -> GATHER_TWIML
+}
+
+/**
+ * Groups interim and final transcription segments into utterances so each utterance keeps one
+ * message id. The app replaces the bubble with that id as partials refine, instead of appending.
+ */
+private class UtteranceTracker {
+    private var currentId: Int? = null
+    private var lastSeq = Long.MIN_VALUE
+
+    /**
+     * Returns the message id for this segment, or null if it's stale (arrived out of order).
+     * [resetSequenceOnFinal]: Gather numbers partials per <Gather>, so the count restarts each utterance;
+     * real-time transcription numbers events across the whole session, so it doesn't.
+     */
+    @Synchronized
+    fun idFor(seq: Long?, isFinal: Boolean, resetSequenceOnFinal: Boolean = false): Int? {
+        if (seq != null) {
+            if (seq <= lastSeq) return null
+            lastSeq = seq
+        }
+        val id = currentId ?: messageIdCounter.getAndIncrement().also { currentId = it }
+        if (isFinal) {
+            currentId = null
+            if (resetSequenceOnFinal) lastSeq = Long.MIN_VALUE
+        }
+        return id
+    }
+}
+
+private val utterances = ConcurrentHashMap<String, UtteranceTracker>()
+
+private fun utteranceTracker(callSid: String) = utterances.getOrPut(callSid) { UtteranceTracker() }
+
+/** Broadcasts one segment of the remote party's speech. Blank finals just close the utterance. */
+private suspend fun broadcastRemoteSpeech(
+    callSid: String,
+    text: String?,
+    isFinal: Boolean,
+    seq: Long?,
+    resetSequenceOnFinal: Boolean = false
+) {
+    val id = utteranceTracker(callSid).idFor(seq, isFinal, resetSequenceOnFinal) ?: return
+    if (text.isNullOrBlank()) return
+    broadcastTranscript(
+        TranscriptMessage(
+            id = id,
+            senderName = "Contact",
+            text = text.trim(),
+            isMe = false,
+            isFinal = isFinal
+        )
+    )
+}
 
 // Keeps an incoming caller waiting while the app rings. After ~30s with no answer
 // Twilio follows the redirect and we report a missed call.
@@ -241,30 +351,99 @@ fun Application.module() {
             }
         }
 
-        // TwiML loop that gathers the remote party's speech for captioning
+        // TwiML for a connected call (outgoing calls and accepted incoming calls): starts captioning
         get("/api/twiml") {
-            call.respondText(GATHER_TWIML, ContentType.Application.Xml)
+            call.respondText(callTwiml(), ContentType.Application.Xml)
         }
         post("/api/twiml") {
+            call.respondText(callTwiml(), ContentType.Application.Xml)
+        }
+        // Gather loop, used by CAPTION_MODE=gather and as the fallback if real-time transcription fails
+        post("/api/twiml/gather") {
             call.respondText(GATHER_TWIML, ContentType.Application.Xml)
         }
+        // Keeps a real-time-transcribed call open without restarting the transcription
+        post("/api/twiml/hold") {
+            call.respondText(HOLD_TWIML, ContentType.Application.Xml)
+        }
 
-        // Endpoint to receive Twilio speech recognition webhook results for the called phone
+        // Real-Time Transcription events: interim and final text for the remote party
+        post("/api/transcription-callback") {
+            val params = call.receiveParameters()
+            val callSid = params["CallSid"]
+            val event = params["TranscriptionEvent"]
+
+            when (event) {
+                "transcription-content" -> if (callSid != null) {
+                    val text = params["TranscriptionData"]?.let { data ->
+                        try {
+                            wireJson.parseToJsonElement(data).jsonObject["transcript"]?.jsonPrimitive?.contentOrNull
+                        } catch (e: Exception) {
+                            println(">>> [SERVER] BAD TranscriptionData: $data")
+                            null
+                        }
+                    }
+                    val isFinal = params["Final"]?.equals("true", ignoreCase = true) ?: true
+                    broadcastRemoteSpeech(callSid, text, isFinal, params["SequenceId"]?.toLongOrNull())
+                    if (isFinal) {
+                        println(">>> [SERVER] TRANSCRIPT (track=${params["Track"]}): '$text'")
+                    }
+                }
+
+                "transcription-started" ->
+                    println(">>> [SERVER] REAL-TIME TRANSCRIPTION STARTED: sid=$callSid track=${params["Track"]} engine=${params["TranscriptionEngine"]}")
+
+                "transcription-stopped" -> {
+                    println(">>> [SERVER] REAL-TIME TRANSCRIPTION STOPPED: sid=$callSid")
+                    callSid?.let { utterances.remove(it) }
+                }
+
+                "transcription-error" -> {
+                    println(">>> [SERVER] REAL-TIME TRANSCRIPTION ERROR: sid=$callSid code=${params["TranscriptionErrorCode"]} error=${params["TranscriptionError"]}")
+                    // Keep captions working: switch this call to the Gather loop
+                    if (callSid != null && !callSid.startsWith(TEST_SID_PREFIX) && initTwilio()) {
+                        try {
+                            Call.updater(callSid)
+                                .setUrl(URI.create("$publicBaseUrl/api/twiml/gather"))
+                                .setMethod(HttpMethod.POST)
+                                .update()
+                            println(">>> [SERVER] FELL BACK TO GATHER CAPTIONING: sid=$callSid")
+                        } catch (e: Exception) {
+                            println(">>> [SERVER] GATHER FALLBACK FAILED: ${e.message}")
+                        }
+                    }
+                }
+
+                else -> println(">>> [SERVER] UNKNOWN TRANSCRIPTION EVENT: $event")
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        // Gather mode: interim text while the remote party is still speaking (can't return TwiML)
+        post("/api/twilio-speech-partial") {
+            val params = call.receiveParameters()
+            val callSid = params["CallSid"]
+            if (callSid != null) {
+                broadcastRemoteSpeech(
+                    callSid,
+                    params["UnstableSpeechResult"],
+                    isFinal = false,
+                    seq = params["SequenceNumber"]?.toLongOrNull()
+                )
+            }
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        // Gather mode: final text for one utterance
         post("/api/twilio-speech-callback") {
             val params = call.receiveParameters()
-            val speechResult = params["SpeechResult"] ?: params["UnstableSpeechResult"]
-            val contactName = params["ContactName"] ?: "Contact"
-            println(">>> [SERVER] RECEIVED TWILIO SPEECH CALLBACK: speechResult='$speechResult', contactName='$contactName'")
+            val callSid = params["CallSid"]
+            val speechResult = params["SpeechResult"]
+            println(">>> [SERVER] RECEIVED TWILIO SPEECH CALLBACK: speechResult='$speechResult'")
 
-            if (!speechResult.isNullOrBlank()) {
-                broadcastTranscript(
-                    TranscriptMessage(
-                        id = messageIdCounter.getAndIncrement(),
-                        senderName = contactName,
-                        text = speechResult,
-                        isMe = false
-                    )
-                )
+            if (callSid != null) {
+                // No sequence number on the final callback; it always closes the current utterance
+                broadcastRemoteSpeech(callSid, speechResult, isFinal = true, seq = null, resetSequenceOnFinal = true)
             }
 
             // Continue gathering speech without hanging up
@@ -288,7 +467,10 @@ fun Application.module() {
                     ?: if (direction == "incoming") params["From"] else params["To"]
 
                 broadcastCallEvent(CallEvent(callSid, direction, status, phoneNumber))
-                if (status in TERMINAL_STATUSES) trackedCalls.remove(callSid)
+                if (status in TERMINAL_STATUSES) {
+                    trackedCalls.remove(callSid)
+                    utterances.remove(callSid)
+                }
             }
             call.respond(HttpStatusCode.NoContent)
         }

@@ -69,7 +69,45 @@ data class CaptionMessage(
     val id: Int,
     val senderName: String,
     val text: String,
-    val isMe: Boolean
+    val isMe: Boolean,
+    /** True if this was our caption and it couldn't be sent (captions socket was down). */
+    val failed: Boolean = false,
+    /** False while the text is still interim; later messages with the same id replace it. */
+    val isFinal: Boolean = true
+)
+
+/**
+ * Adds [msg] to [captions]. Messages from the other party with an id already shown replace that
+ * bubble (interim text being refined); our own echoed messages are dropped as duplicates.
+ */
+internal fun mergeCaption(captions: List<CaptionMessage>, msg: CaptionMessage): List<CaptionMessage> {
+    if (msg.isMe) {
+        val isDuplicate = captions.any { it.id == msg.id || (it.isMe && it.text == msg.text) }
+        return if (isDuplicate) captions else captions + msg
+    }
+    val index = captions.indexOfFirst { !it.isMe && it.id == msg.id }
+    return when {
+        index < 0 -> captions + msg
+        // A late interim update must not overwrite the finished text
+        captions[index].isFinal && !msg.isFinal -> captions
+        else -> captions.toMutableList().also { it[index] = msg }
+    }
+}
+
+// SpeechRecognizer error codes added in API 31; literals so they compile against minSdk 26
+private const val ERROR_TOO_MANY_REQUESTS = 10
+private const val ERROR_SERVER_DISCONNECTED = 11
+private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
+private const val ERROR_LANGUAGE_UNAVAILABLE = 13
+
+/** Give up restarting the recognizer after this many failures in a row (not counting silence). */
+private const val MAX_CONSECUTIVE_SPEECH_FAILURES = 5
+
+/** Streams the recognizer's start/stop "beep" can play on. Muted while listening during a call. */
+private val BEEP_STREAMS = intArrayOf(
+    android.media.AudioManager.STREAM_MUSIC,
+    android.media.AudioManager.STREAM_NOTIFICATION,
+    android.media.AudioManager.STREAM_SYSTEM
 )
 
 @Composable
@@ -90,29 +128,65 @@ fun TranscriptionScreen(
 
     var twilioStatus by remember { mutableStateOf<String?>("Connected") }
     var isEndingCall by remember { mutableStateOf(false) }
+    var endCallError by remember { mutableStateOf<String?>(null) }
 
-    val displayName = contactName ?: "Contact"
+    // Prefer the contact name, then the phone number; never show a placeholder like "null"
+    val displayName = contactName?.takeIf { it.isNotBlank() && it != "null" }
+        ?: contactPhoneNumber?.takeIf { it.isNotBlank() }
+        ?: "Caller"
     val callService = remember { CallService() }
     val coroutineScope = rememberCoroutineScope()
 
     var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
     val listState = rememberLazyListState()
     var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
+    var captionsConnected by remember { mutableStateOf(true) }
+
+    fun captionPayload(caption: CaptionMessage): String = org.json.JSONObject().apply {
+        put("id", caption.id)
+        put("senderName", caption.senderName)
+        put("text", caption.text)
+        put("isMe", true)
+    }.toString()
+
+    /** Shows the user's own caption and sends it to the other party; marks it failed if the socket is down. */
+    fun sendMyCaption(text: String) {
+        val caption = CaptionMessage(
+            id = System.currentTimeMillis().toInt(),
+            senderName = "Me",
+            text = text,
+            isMe = true
+        )
+        val sent = webSocket?.send(captionPayload(caption)) == true
+        visibleCaptions = visibleCaptions + caption.copy(failed = !sent)
+    }
+
+    fun retryCaption(caption: CaptionMessage) {
+        val sent = webSocket?.send(captionPayload(caption)) == true
+        if (sent) {
+            visibleCaptions = visibleCaptions.map { if (it.id == caption.id) it.copy(failed = false) else it }
+        }
+    }
+
+    fun hangUp(sid: String) {
+        isEndingCall = true
+        endCallError = null
+        coroutineScope.launch {
+            val result = callService.endCall(sid)
+            if (!result.success) {
+                android.util.Log.e("TranscriptionScreen", "endCall failed: ${result.errorMessage}")
+                endCallError = result.errorMessage ?: "Unknown error"
+            }
+            isEndingCall = false
+        }
+    }
 
     fun handleEndCall() {
         android.util.Log.d("TranscriptionScreen", "handleEndCall triggered. callSid=$callSid")
         onCall = false
         twilioStatus = "Call Ended"
         val sid = callSid ?: return
-        isEndingCall = true
-        coroutineScope.launch {
-            val result = callService.endCall(sid)
-            if (!result.success) {
-                android.util.Log.e("TranscriptionScreen", "endCall failed: ${result.errorMessage}")
-                twilioStatus = "Couldn't hang up cleanly: ${result.errorMessage}"
-            }
-            isEndingCall = false
-        }
+        hangUp(sid)
     }
 
     // The other party hung up
@@ -121,7 +195,11 @@ fun TranscriptionScreen(
         callEvents.collect { event ->
             if (event.callSid == callSid && event.isTerminal && onCall) {
                 onCall = false
-                twilioStatus = "$displayName hung up"
+                twilioStatus = when (event.status) {
+                    "failed" -> "The call dropped due to a connection problem"
+                    "busy", "no-answer", "canceled" -> "The call was disconnected"
+                    else -> "$displayName hung up"
+                }
             }
         }
     }
@@ -136,10 +214,39 @@ fun TranscriptionScreen(
         )
     }
 
+    // After a second denial Android stops showing the prompt, so send the user to app settings
+    var micPermissionDenials by remember { mutableStateOf(0) }
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasMicPermission = isGranted
+        if (!isGranted) micPermissionDenials++
+    }
+
+    fun requestMicPermission() {
+        val grantedNow = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        when {
+            grantedNow -> hasMicPermission = true
+            micPermissionDenials >= 2 -> context.startActivity(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = android.net.Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+            else -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    val speechAvailable = remember { SpeechRecognizer.isRecognitionAvailable(context) }
+    // Set when the recognizer hits an error it can't recover from; "Retry" clears it, restarting the mic
+    var speechError by remember { mutableStateOf<String?>(null) }
+    val micUnusable = !hasMicPermission || !speechAvailable || speechError != null
+
+    // If the mic can't caption the user's speech, open the typing box so they can still talk
+    LaunchedEffect(micUnusable, onCall) {
+        if (micUnusable && onCall) isEditingSpeech = true
     }
 
     LaunchedEffect(Unit) {
@@ -151,14 +258,39 @@ fun TranscriptionScreen(
     var micStatusText by remember { mutableStateOf("Mic: Active (Listening...)") }
 
     // Continuous SpeechRecognizer for caller speech transcription
-    DisposableEffect(onCall, isMuted, hasMicPermission) {
-        if (!onCall || isMuted || !hasMicPermission || !SpeechRecognizer.isRecognitionAvailable(context)) {
-            micStatusText = if (isMuted) "Mic: Muted" else "Mic: Disabled"
+    DisposableEffect(onCall, isMuted, hasMicPermission, speechError) {
+        if (!onCall || isMuted || micUnusable) {
+            micStatusText = when {
+                isMuted -> "Mic: Muted"
+                !hasMicPermission -> "Mic: No permission"
+                !speechAvailable -> "Mic: Speech recognition unavailable"
+                speechError != null -> "Mic: Stopped"
+                else -> "Mic: Disabled"
+            }
             return@DisposableEffect onDispose {}
         }
 
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        var consecutiveFailures = 0
+
+        // The recognizer plays a start/stop beep on every restart, which happens every few
+        // seconds of silence. Silence those streams while listening and restore them after.
+        val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val streamsWeMuted = BEEP_STREAMS.filter { stream ->
+            try {
+                if (audioManager.isStreamMute(stream)) {
+                    false // user already had it muted; leave it alone
+                } else {
+                    audioManager.adjustStreamVolume(stream, android.media.AudioManager.ADJUST_MUTE, 0)
+                    true
+                }
+            } catch (e: SecurityException) {
+                // Muting notification/system streams can be blocked by Do Not Disturb policy
+                android.util.Log.w("SpeechRecognizer", "Couldn't mute stream $stream: ${e.message}")
+                false
+            }
+        }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -176,6 +308,7 @@ fun TranscriptionScreen(
                         speechRecognizer.startListening(intent)
                     } catch (e: Exception) {
                         android.util.Log.e("SpeechRecognizer", "Error restarting: ${e.message}")
+                        speechError = "Captioning of your speech stopped unexpectedly."
                     }
                 }
             }, delayMs)
@@ -189,6 +322,7 @@ fun TranscriptionScreen(
 
             override fun onBeginningOfSpeech() {
                 android.util.Log.d("SpeechRecognizer", "Beginning of speech")
+                consecutiveFailures = 0
                 micStatusText = "Mic: Hearing speech..."
             }
 
@@ -202,32 +336,54 @@ fun TranscriptionScreen(
 
             override fun onError(error: Int) {
                 android.util.Log.e("SpeechRecognizer", "Speech error code: $error")
-                micStatusText = "Mic: Active (Listening...)"
-                keepListening(150L)
+                when (error) {
+                    // Silence: normal, just listen again
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        micStatusText = "Mic: Active (Listening...)"
+                        keepListening(100L)
+                    }
+                    // Can't recover by retrying
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> hasMicPermission = false
+                    ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE ->
+                        speechError = "Speech recognition doesn't support your device's language."
+                    else -> {
+                        consecutiveFailures++
+                        if (consecutiveFailures >= MAX_CONSECUTIVE_SPEECH_FAILURES) {
+                            speechError = when (error) {
+                                SpeechRecognizer.ERROR_NETWORK,
+                                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+                                SpeechRecognizer.ERROR_SERVER,
+                                ERROR_SERVER_DISCONNECTED ->
+                                    "Speech captioning lost its network connection."
+                                SpeechRecognizer.ERROR_AUDIO ->
+                                    "Couldn't record audio. Another app may be using the microphone."
+                                else -> "Captioning of your speech stopped unexpectedly."
+                            }
+                            return
+                        }
+                        micStatusText = when (error) {
+                            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                                "Mic: Network problem, retrying…"
+                            else -> "Mic: Reconnecting…"
+                        }
+                        // Back off: 0.5s, 1s, 2s, 4s… so we don't spin on a broken recognizer
+                        val backoff = when (error) {
+                            ERROR_TOO_MANY_REQUESTS -> 5000L
+                            else -> 500L shl (consecutiveFailures - 1)
+                        }
+                        keepListening(backoff)
+                    }
+                }
             }
 
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val spokenText = matches?.firstOrNull()
                 android.util.Log.d("SpeechRecognizer", "Recognized text: $spokenText")
+                consecutiveFailures = 0
 
                 if (!spokenText.isNullOrBlank()) {
-                    val msgId = System.currentTimeMillis().toInt()
-                    val myMessage = CaptionMessage(
-                        id = msgId,
-                        senderName = "Me",
-                        text = spokenText,
-                        isMe = true
-                    )
-                    visibleCaptions = visibleCaptions + myMessage
-
-                    val jsonPayload = org.json.JSONObject().apply {
-                        put("id", msgId)
-                        put("senderName", "Me")
-                        put("text", spokenText)
-                        put("isMe", true)
-                    }.toString()
-                    webSocket?.send(jsonPayload)
+                    sendMyCaption(spokenText)
                 }
 
                 micStatusText = "Mic: Active (Listening...)"
@@ -252,7 +408,7 @@ fun TranscriptionScreen(
             micStatusText = "Mic: Active (Listening...)"
         } catch (e: Exception) {
             android.util.Log.e("SpeechRecognizer", "Initial startListening error: ${e.message}")
-            micStatusText = "Mic Error: Failed to start"
+            speechError = "Couldn't start the microphone."
         }
 
         onDispose {
@@ -262,34 +418,64 @@ fun TranscriptionScreen(
                 speechRecognizer.cancel()
                 speechRecognizer.destroy()
             } catch (e: Exception) {}
+            // Restore synchronously: a restarted effect checks isStreamMute right after this
+            streamsWeMuted.forEach { stream ->
+                try {
+                    audioManager.adjustStreamVolume(stream, android.media.AudioManager.ADJUST_UNMUTE, 0)
+                } catch (e: SecurityException) {}
+            }
         }
     }
 
-    // Connect WebSocket for live dual-sided transcription when call is active
+    // WebSocket for live dual-sided transcription while the call is active. Reconnects with
+    // backoff if it drops, and shows a banner while captions are disconnected.
     LaunchedEffect(onCall, displayName) {
-        if (onCall) {
-            val socket = callService.connectTranscriptionWebSocket(displayName) { msg ->
-                val isDuplicate = visibleCaptions.any { existing ->
-                    existing.id == msg.id || (msg.isMe && existing.isMe && existing.text == msg.text)
-                }
-                if (!isDuplicate) {
-                    visibleCaptions = visibleCaptions + msg
+        if (!onCall) return@LaunchedEffect
+        var attempt = 0
+        while (true) {
+            val dropped = kotlinx.coroutines.CompletableDeferred<Throwable?>()
+            val socket = callService.connectTranscriptionWebSocket(
+                contactName = displayName,
+                onConnected = {
+                    coroutineScope.launch {
+                        attempt = 0
+                        captionsConnected = true
+                    }
+                },
+                onDisconnected = { dropped.complete(it) }
+            ) { msg ->
+                coroutineScope.launch {
+                    // The server labels the other party generically; use the name we know
+                    val labeled = if (msg.isMe) msg else msg.copy(senderName = displayName)
+                    visibleCaptions = mergeCaption(visibleCaptions, labeled)
                 }
             }
             webSocket = socket
             try {
-                kotlinx.coroutines.awaitCancellation()
+                val cause = dropped.await()
+                android.util.Log.w("TranscriptionScreen", "Captions socket dropped: ${cause?.message}")
             } finally {
                 socket.close(1000, "Call Ended")
                 webSocket = null
             }
+            captionsConnected = false
+            attempt++
+            kotlinx.coroutines.delay(minOf(1000L shl minOf(attempt - 1, 4), 10_000L))
         }
     }
 
-    // Auto-scroll to the newest message when it appears
-    LaunchedEffect(visibleCaptions.size) {
-        if (visibleCaptions.isNotEmpty()) {
-            listState.animateScrollToItem(visibleCaptions.size - 1)
+    // Auto-scroll to the newest message when it appears (animated), and keep the bottom in view
+    // as interim text grows the last bubble (instant, so rapid updates don't queue animations)
+    var lastScrolledSize by remember { mutableStateOf(0) }
+    LaunchedEffect(visibleCaptions.size, visibleCaptions.lastOrNull()?.text) {
+        if (visibleCaptions.isEmpty()) return@LaunchedEffect
+        val lastIndex = visibleCaptions.size - 1
+        if (visibleCaptions.size != lastScrolledSize) {
+            lastScrolledSize = visibleCaptions.size
+            listState.animateScrollToItem(lastIndex)
+        } else {
+            // Large offset scrolls to the bottom of the last item rather than its top
+            listState.scrollToItem(lastIndex, scrollOffset = Int.MAX_VALUE / 2)
         }
     }
 
@@ -347,6 +533,14 @@ fun TranscriptionScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                endCallError?.let { error ->
+                    Spacer(modifier = Modifier.height(16.dp))
+                    StatusBanner(
+                        message = "Couldn't hang up the call, so the other person may still be connected. ($error)",
+                        actionLabel = "Try again",
+                        onAction = { callSid?.let { hangUp(it) } }
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 // Wait for the hang-up request to finish so leaving the screen doesn't cancel it
                 Button(onClick = onBack, enabled = !isEndingCall) {
@@ -354,6 +548,26 @@ fun TranscriptionScreen(
                 }
             }
         } else {
+            // Problems that affect captioning, most important first
+            when {
+                !hasMicPermission -> StatusBanner(
+                    message = "Microphone access is off, so your speech can't be captioned. You can type messages below instead.",
+                    actionLabel = if (micPermissionDenials >= 2) "Open settings" else "Allow mic",
+                    onAction = { requestMicPermission() }
+                )
+                !speechAvailable -> StatusBanner(
+                    message = "Speech recognition isn't available on this device. Type your messages below instead."
+                )
+                speechError != null -> StatusBanner(
+                    message = "$speechError You can type messages below instead.",
+                    actionLabel = "Retry mic",
+                    onAction = { speechError = null }
+                )
+            }
+            if (!captionsConnected) {
+                Spacer(modifier = Modifier.height(8.dp))
+                StatusBanner(message = "Captions disconnected. Reconnecting…")
+            }
             // Active Chat Transcriptions
             if (visibleCaptions.isEmpty()) {
                 Box(
@@ -377,7 +591,7 @@ fun TranscriptionScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(visibleCaptions) { caption ->
-                        CaptionBubble(caption = caption)
+                        CaptionBubble(caption = caption, onRetry = { retryCaption(caption) })
                     }
                 }
             }
@@ -400,22 +614,7 @@ fun TranscriptionScreen(
                     IconButton(
                         onClick = {
                             if (inputText.isNotBlank()) {
-                                val textToSend = inputText.trim()
-                                val msgId = System.currentTimeMillis().toInt()
-                                val myCaption = CaptionMessage(
-                                    id = msgId,
-                                    senderName = "Me",
-                                    text = textToSend,
-                                    isMe = true
-                                )
-                                visibleCaptions = visibleCaptions + myCaption
-                                val jsonPayload = org.json.JSONObject().apply {
-                                    put("id", msgId)
-                                    put("senderName", "Me")
-                                    put("text", textToSend)
-                                    put("isMe", true)
-                                }.toString()
-                                webSocket?.send(jsonPayload)
+                                sendMyCaption(inputText.trim())
                                 inputText = ""
                             }
                         }
@@ -489,7 +688,34 @@ fun TranscriptionScreen(
 }
 
 @Composable
-fun CaptionBubble(caption: CaptionMessage) {
+fun StatusBanner(
+    message: String,
+    actionLabel: String? = null,
+    onAction: () -> Unit = {}
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f)
+        )
+        if (actionLabel != null) {
+            androidx.compose.material3.TextButton(onClick = onAction) {
+                Text(actionLabel, color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun CaptionBubble(caption: CaptionMessage, onRetry: () -> Unit = {}) {
     val isMe = caption.isMe
     val bubbleColor = if (isMe) {
         MaterialTheme.colorScheme.primaryContainer
@@ -530,8 +756,18 @@ fun CaptionBubble(caption: CaptionMessage) {
             Text(
                 text = caption.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = textColor
+                // Interim text is dimmed until the final version arrives
+                color = if (caption.isFinal) textColor else textColor.copy(alpha = 0.6f)
             )
+        }
+        if (caption.failed) {
+            androidx.compose.material3.TextButton(onClick = onRetry) {
+                Text(
+                    text = "Not sent · Tap to retry",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 }

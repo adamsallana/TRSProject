@@ -27,8 +27,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.snapshotFlow
+import com.trsproject.android.network.phoneNumbersMatch
 
 private const val END_MESSAGE_DELAY_MS = 2500L
+
+/** How long to wait for status events after make-call times out before reporting failure. */
+private const val LOST_CALL_RECOVERY_MS = 30_000L
 
 /**
  * Shown while an outgoing call is being placed and ringing. Starts the Twilio call on entry and
@@ -50,6 +58,9 @@ fun OutgoingCallScreen(
     // Latest status per sid. Events can arrive before makeCall returns the sid, so keep them all.
     val statusBySid = remember { mutableStateMapOf<String, String>() }
 
+    // True while the make-call request timed out and we're watching events to see if the call started
+    var recoveringLostCall by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         launch {
             callEvents.collect { event ->
@@ -58,13 +69,33 @@ fun OutgoingCallScreen(
                 if (previous == null || previous !in CallEvent.TERMINAL_STATUSES) {
                     statusBySid[event.callSid] = event.status
                 }
+                // If makeCall hasn't given us a sid (slow or timed out), adopt a live call to this
+                // number. Skip terminal events so a leftover event from an older call isn't picked.
+                if (callSid == null && startError == null &&
+                    event.status !in CallEvent.TERMINAL_STATUSES &&
+                    phoneNumbersMatch(event.phoneNumber, phoneNumber)
+                ) {
+                    android.util.Log.d("OutgoingCallScreen", "Adopted call ${event.callSid} from status event")
+                    callSid = event.callSid
+                }
             }
         }
         val result = callService.makeCall(toPhoneNumber = phoneNumber)
-        if (result.success && result.callSid != null) {
-            callSid = result.callSid
-        } else {
-            startError = result.errorMessage ?: "Could not place call"
+        when {
+            result.success && result.callSid != null -> callSid = result.callSid
+            callSid != null -> Unit // already learned the sid from a status event
+            result.mayHaveSucceeded -> {
+                // The server may have placed the call anyway; give its status events time to arrive
+                recoveringLostCall = true
+                val found = withTimeoutOrNull(LOST_CALL_RECOVERY_MS) {
+                    snapshotFlow { callSid }.filterNotNull().first()
+                }
+                recoveringLostCall = false
+                if (found == null) {
+                    startError = "Couldn't reach the server. Check your connection and try again."
+                }
+            }
+            else -> startError = result.errorMessage ?: "Could not place call"
         }
     }
 
@@ -107,6 +138,7 @@ fun OutgoingCallScreen(
     val statusText = when {
         cancelRequested -> "Cancelling…"
         startError != null -> "Call failed: $startError"
+        recoveringLostCall -> "Still connecting…"
         callSid == null -> "Calling…"
         else -> outgoingStatusText(status)
     }
