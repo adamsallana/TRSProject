@@ -29,21 +29,27 @@ object SupabaseService {
 
     // --- User Profile Operations ---
 
+
     suspend fun fetchUserProfile(userId: String): UserProfile =
         withContext(Dispatchers.IO) {
             try {
-                client.postgrest["profiles"]
+                val profile = client.postgrest["profiles"]
                     .select {
                         filter {
                             eq("id", userId)
                         }
                     }
-                    .decodeSingle<UserProfile>()
+                    .decodeList<UserProfile>()
+                    .firstOrNull()
+
+                profile ?: UserProfile(id = userId)
+
             } catch (e: Exception) {
                 Log.e("SupabaseService", "Failed to fetch user profile", e)
                 throw e
             }
         }
+
 
 
 
@@ -64,15 +70,27 @@ object SupabaseService {
 
 
     // --- Caption Preferences Operations ---
-    suspend fun fetchCaptionPreferences(userId: String): CaptionPreferences = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["caption_settings"]
-                .select { filter { eq("user_id", userId) } }
-                .decodeSingle<CaptionPreferences>()
-        } catch (e: Exception) {
-            CaptionPreferences()
+
+    suspend fun fetchCaptionPreferences(userId: String): CaptionPreferences =
+        withContext(Dispatchers.IO) {
+            try {
+                val prefs = client.postgrest["caption_settings"]
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                        }
+                    }
+                    .decodeList<CaptionPreferences>()
+                    .firstOrNull()
+
+                prefs ?: CaptionPreferences(userId = userId)
+
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to fetch caption preferences", e)
+                throw e
+            }
         }
-    }
+
 
 
     suspend fun updateCaptionPreferences(prefs: CaptionPreferences): Boolean =
@@ -92,15 +110,27 @@ object SupabaseService {
 
 
     // --- Notification Preferences Operations ---
-    suspend fun fetchNotificationPreferences(userId: String): NotificationPreferences = withContext(Dispatchers.IO) {
-        try {
-            client.postgrest["notification_settings"]
-                .select { filter { eq("user_id", userId) } }
-                .decodeSingle<NotificationPreferences>()
-        } catch (e: Exception) {
-            NotificationPreferences()
+
+    suspend fun fetchNotificationPreferences(userId: String): NotificationPreferences =
+        withContext(Dispatchers.IO) {
+            try {
+                val prefs = client.postgrest["notification_settings"]
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                        }
+                    }
+                    .decodeList<NotificationPreferences>()
+                    .firstOrNull()
+
+                prefs ?: NotificationPreferences(userId = userId)
+
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to fetch notification preferences", e)
+                throw e
+            }
         }
-    }
+
 
 
     suspend fun updateNotificationPreferences(prefs: NotificationPreferences): Boolean =

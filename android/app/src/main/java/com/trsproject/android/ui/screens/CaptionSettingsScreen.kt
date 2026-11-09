@@ -45,6 +45,8 @@ import com.trsproject.android.data.model.CaptionPreferences
 import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import kotlinx.coroutines.launch
+import io.github.jan.supabase.auth.auth
+import androidx.compose.runtime.LaunchedEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,6 +64,46 @@ fun CaptionSettingsScreen(
     var highContrast by remember { mutableStateOf(initialPreferences.highContrastEnabled) }
     var isSaving by remember { mutableStateOf(false) }
 
+    var isLoading by remember { mutableStateOf(true) }
+    var loadFailed by remember { mutableStateOf(false) }
+    var savedTextColor by remember { mutableStateOf(initialPreferences.textColor) }
+    var savedCaptionLanguage by remember { mutableStateOf(initialPreferences.captionLanguage) }
+
+
+    LaunchedEffect(Unit) {
+        try {
+            val user = SupabaseService.client.auth.currentUserOrNull()
+
+            if (user == null) {
+                loadFailed = true
+                Toast.makeText(
+                    context,
+                    "Please sign in to view caption settings.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@LaunchedEffect
+            }
+
+            val prefs = SupabaseService.fetchCaptionPreferences(user.id)
+
+            selectedSize = prefs.fontSize
+            autoCaption = prefs.autoCaptionEnabled
+            highContrast = prefs.highContrastEnabled
+            savedTextColor = prefs.textColor
+            savedCaptionLanguage = prefs.captionLanguage
+
+        } catch (e: Exception) {
+            loadFailed = true
+            Toast.makeText(
+                context,
+                "Unable to load caption settings.",
+                Toast.LENGTH_LONG
+            ).show()
+        } finally {
+            isLoading = false
+        }
+    }
+
     val fontSizes = listOf("Small", "Medium", "Large", "Extra Large")
 
     val textFontSize = when (selectedSize) {
@@ -71,14 +113,32 @@ fun CaptionSettingsScreen(
         else -> 16.sp
     }
 
+
     fun savePreferences() {
         isSaving = true
+
         coroutineScope.launch {
+            val userId = SupabaseService.client.auth.currentUserOrNull()?.id
+
+            if (userId == null) {
+                isSaving = false
+                Toast.makeText(
+                    context,
+                    "Please sign in before saving caption settings.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+
             val updated = CaptionPreferences(
+                userId = userId,
                 fontSize = selectedSize,
+                textColor = savedTextColor,
+                captionLanguage = savedCaptionLanguage,
                 autoCaptionEnabled = autoCaption,
                 highContrastEnabled = highContrast
             )
+
             val success = SupabaseService.updateCaptionPreferences(updated)
             isSaving = false
 
@@ -96,9 +156,9 @@ fun CaptionSettingsScreen(
                     Toast.LENGTH_LONG
                 ).show()
             }
-
         }
     }
+
 
     Scaffold(
         topBar = {
@@ -205,7 +265,7 @@ fun CaptionSettingsScreen(
 
             Button(
                 onClick = { savePreferences() },
-                enabled = !isSaving,
+                enabled = !isSaving && !isLoading && !loadFailed,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp)

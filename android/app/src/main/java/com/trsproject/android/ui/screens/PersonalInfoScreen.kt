@@ -65,23 +65,38 @@ fun PersonalInfoScreen(
 
     var isLoading by remember { mutableStateOf(true) }
 
+
     LaunchedEffect(Unit) {
-        val user = SupabaseService.client.auth.currentUserOrNull()
+        try {
+            val user = SupabaseService.client.auth.currentUserOrNull()
 
-        if (user == null) {
+            if (user == null) {
+                Toast.makeText(
+                    context,
+                    "Please sign in to view your profile.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@LaunchedEffect
+            }
+
+            val profile = SupabaseService.fetchUserProfile(user.id)
+
+            fullName = profile.fullName
+            email = profile.email.ifBlank { user.email ?: "" }
+            phoneNumber = profile.phoneNumber
+            trsRelayNumber = profile.trsRelayNumber
+
+        } catch (e: Exception) {
+            Toast.makeText(
+                context,
+                "Unable to load profile. Please try again.",
+                Toast.LENGTH_LONG
+            ).show()
+        } finally {
             isLoading = false
-            return@LaunchedEffect
         }
-
-        val profile = SupabaseService.fetchUserProfile(user.id)
-
-        fullName = profile.fullName
-        email = profile.email.ifBlank { user.email ?: "" }
-        phoneNumber = profile.phoneNumber
-        trsRelayNumber = profile.trsRelayNumber
-
-        isLoading = false
     }
+
 
 
     fun saveInfo() {
@@ -102,11 +117,13 @@ fun PersonalInfoScreen(
 
             val updated = UserProfile(
                 id = userId,
+                displayName = fullName,
                 fullName = fullName,
                 email = email,
                 phoneNumber = phoneNumber,
                 trsRelayNumber = trsRelayNumber
             )
+
 
             val success = SupabaseService.updateUserProfile(updated)
             isSaving = false

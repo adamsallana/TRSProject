@@ -40,6 +40,8 @@ import com.trsproject.android.data.model.NotificationPreferences
 import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import io.github.jan.supabase.auth.auth
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,35 +60,99 @@ fun NotificationsScreen(
     var emailNotifications by remember { mutableStateOf(initialPreferences.emailNotificationsEnabled) }
     var isSaving by remember { mutableStateOf(false) }
 
-    fun savePreferences() {
-        isSaving = true
-        coroutineScope.launch {
-            val updated = NotificationPreferences(
-                callAlertsEnabled = callAlerts,
-                transcriptSummariesEnabled = transcriptSummaries,
-                soundVibrationEnabled = soundVibration,
-                emailNotificationsEnabled = emailNotifications
-            )
-            val success = SupabaseService.updateNotificationPreferences(updated)
-            isSaving = false
+    var isLoading by remember { mutableStateOf(true) }
+    var loadFailed by remember { mutableStateOf(false) }
 
-            if (success) {
+
+    LaunchedEffect(Unit) {
+        try {
+            val user = SupabaseService.client.auth.currentUserOrNull()
+
+            if (user == null) {
+                loadFailed = true
                 Toast.makeText(
                     context,
-                    "Notification settings saved successfully!",
-                    Toast.LENGTH_SHORT
+                    "Please sign in to view notification settings.",
+                    Toast.LENGTH_LONG
                 ).show()
-                onBack()
-            } else {
+                return@LaunchedEffect
+            }
+
+            val prefs = SupabaseService.fetchNotificationPreferences(user.id)
+
+            callAlerts = prefs.callAlertsEnabled
+            transcriptSummaries = prefs.transcriptSummariesEnabled
+            soundVibration = prefs.soundVibrationEnabled
+            emailNotifications = prefs.emailNotificationsEnabled
+
+        } catch (e: Exception) {
+            loadFailed = true
+            Toast.makeText(
+                context,
+                "Unable to load notification settings.",
+                Toast.LENGTH_LONG
+            ).show()
+        } finally {
+            isLoading = false
+        }
+    }
+
+
+
+    fun savePreferences() {
+        if (isSaving || isLoading || loadFailed) return
+
+        isSaving = true
+
+        coroutineScope.launch {
+            try {
+                val userId = SupabaseService.client.auth.currentUserOrNull()?.id
+
+                if (userId == null) {
+                    Toast.makeText(
+                        context,
+                        "Please sign in before saving notification settings.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+
+                val updated = NotificationPreferences(
+                    userId = userId,
+                    callAlertsEnabled = callAlerts,
+                    transcriptSummariesEnabled = transcriptSummaries,
+                    soundVibrationEnabled = soundVibration,
+                    emailNotificationsEnabled = emailNotifications
+                )
+
+                val success = SupabaseService.updateNotificationPreferences(updated)
+
+                if (success) {
+                    Toast.makeText(
+                        context,
+                        "Notification settings saved successfully!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    onBack()
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Unable to save notification settings. Please try again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
                 Toast.makeText(
                     context,
                     "Unable to save notification settings. Please try again.",
                     Toast.LENGTH_LONG
                 ).show()
+            } finally {
+                isSaving = false
             }
-
         }
     }
+
 
     Scaffold(
         topBar = {
@@ -180,7 +246,7 @@ fun NotificationsScreen(
 
             Button(
                 onClick = { savePreferences() },
-                enabled = !isSaving,
+                enabled = !isSaving && !isLoading && !loadFailed,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp)
