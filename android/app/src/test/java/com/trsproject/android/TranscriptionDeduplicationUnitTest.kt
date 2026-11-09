@@ -71,4 +71,30 @@ class TranscriptionDeduplicationUnitTest {
         val isMe = senderName.equals("Me", ignoreCase = true)
         assertTrue(isMe)
     }
+
+    @Test
+    fun testCaptionPreferencesDefaults() {
+        val prefs = com.trsproject.android.data.model.CaptionPreferences()
+        assertEquals("Medium", prefs.fontSize)
+        assertEquals("Default", prefs.textColor)
+        assertEquals("English (US)", prefs.captionLanguage)
+        assertTrue(prefs.autoCaptionEnabled)
+        assertFalse(prefs.highContrastEnabled)
+    }
+
+    @Test
+    fun testCaptionPreferencesCustomValues() {
+        val prefs = com.trsproject.android.data.model.CaptionPreferences(
+            fontSize = "Large",
+            textColor = "Yellow",
+            captionLanguage = "Spanish",
+            autoCaptionEnabled = false,
+            highContrastEnabled = true
+        )
+        assertEquals("Large", prefs.fontSize)
+        assertEquals("Yellow", prefs.textColor)
+        assertEquals("Spanish", prefs.captionLanguage)
+        assertFalse(prefs.autoCaptionEnabled)
+        assertTrue(prefs.highContrastEnabled)
+    }
 }

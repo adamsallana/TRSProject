@@ -60,6 +60,10 @@ import androidx.core.content.ContextCompat
 import com.trsproject.android.network.CallEvent
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import androidx.compose.ui.unit.sp
+import com.trsproject.android.data.model.CaptionPreferences
+import com.trsproject.android.data.remote.SupabaseService
+import io.github.jan.supabase.auth.auth
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
@@ -118,10 +122,35 @@ fun TranscriptionScreen(
     /** Twilio CallSid of the already-connected call (placed by OutgoingCallScreen or accepted on IncomingCallScreen). */
     callSid: String? = null,
     callEvents: Flow<CallEvent> = emptyFlow(),
+    initialCaptionPreferences: CaptionPreferences? = null,
     onBack: () -> Unit = {}
 ) {
+    var captionPreferences by remember { mutableStateOf(initialCaptionPreferences ?: CaptionPreferences()) }
+    var autoCaptionApplied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (initialCaptionPreferences == null) {
+            try {
+                val userId = SupabaseService.client.auth.currentUserOrNull()?.id
+                if (userId != null) {
+                    val prefs = SupabaseService.fetchCaptionPreferences(userId)
+                    captionPreferences = prefs
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("TranscriptionScreen", "Failed to fetch caption preferences: ${e.message}")
+            }
+        }
+    }
+
     var onCall by remember { mutableStateOf(true) }
     var isMuted by remember { mutableStateOf(false) }
+
+    LaunchedEffect(captionPreferences.autoCaptionEnabled) {
+        if (!autoCaptionApplied) {
+            isMuted = !captionPreferences.autoCaptionEnabled
+            autoCaptionApplied = true
+        }
+    }
     var isSpeakerOn by remember { mutableStateOf(false) }
     var isEditingSpeech by remember { mutableStateOf(false) }
     var inputText by remember { mutableStateOf("") }
@@ -258,7 +287,7 @@ fun TranscriptionScreen(
     var micStatusText by remember { mutableStateOf("Mic: Active (Listening...)") }
 
     // Continuous SpeechRecognizer for caller speech transcription
-    DisposableEffect(onCall, isMuted, hasMicPermission, speechError) {
+    DisposableEffect(onCall, isMuted, hasMicPermission, speechError, captionPreferences.captionLanguage) {
         if (!onCall || isMuted || micUnusable) {
             micStatusText = when {
                 isMuted -> "Mic: Muted"
@@ -292,8 +321,18 @@ fun TranscriptionScreen(
             }
         }
 
+        val languageCode = when (captionPreferences.captionLanguage) {
+            "English (UK)" -> "en-GB"
+            "Spanish" -> "es-ES"
+            "French" -> "fr-FR"
+            "German" -> "de-DE"
+            else -> "en-US"
+        }
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageCode)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageCode)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
@@ -591,7 +630,11 @@ fun TranscriptionScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(visibleCaptions) { caption ->
-                        CaptionBubble(caption = caption, onRetry = { retryCaption(caption) })
+                        CaptionBubble(
+                            caption = caption,
+                            preferences = captionPreferences,
+                            onRetry = { retryCaption(caption) }
+                        )
                     }
                 }
             }
@@ -715,18 +758,44 @@ fun StatusBanner(
 }
 
 @Composable
-fun CaptionBubble(caption: CaptionMessage, onRetry: () -> Unit = {}) {
+fun CaptionBubble(
+    caption: CaptionMessage,
+    preferences: CaptionPreferences = CaptionPreferences(),
+    onRetry: () -> Unit = {}
+) {
     val isMe = caption.isMe
-    val bubbleColor = if (isMe) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
+    val textFontSize = when (preferences.fontSize) {
+        "Small" -> 14.sp
+        "Large" -> 20.sp
+        "Extra Large" -> 24.sp
+        else -> 16.sp
     }
-    val textColor = if (isMe) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+
+    val highContrast = preferences.highContrastEnabled
+
+    val customTextColor = when (preferences.textColor) {
+        "Yellow" -> Color(0xFFFFEB3B)
+        "Green" -> Color(0xFF4CAF50)
+        "Cyan" -> Color(0xFF00BCD4)
+        "White" -> Color.White
+        "Black" -> Color.Black
+        else -> null
     }
+
+    val bubbleColor = when {
+        highContrast -> MaterialTheme.colorScheme.inverseSurface
+        isMe -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    val textColor = when {
+        highContrast -> MaterialTheme.colorScheme.inverseOnSurface
+        customTextColor != null -> customTextColor
+        isMe -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    val fontWeight = if (highContrast) FontWeight.Bold else FontWeight.Normal
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -735,7 +804,7 @@ fun CaptionBubble(caption: CaptionMessage, onRetry: () -> Unit = {}) {
         Text(
             text = caption.senderName,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.outline,
+            color = if (highContrast) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.outline,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
         )
 
@@ -755,8 +824,9 @@ fun CaptionBubble(caption: CaptionMessage, onRetry: () -> Unit = {}) {
         ) {
             Text(
                 text = caption.text,
-                style = MaterialTheme.typography.bodyMedium,
-                // Interim text is dimmed until the final version arrives
+                fontSize = textFontSize,
+                lineHeight = textFontSize * 1.3f,
+                fontWeight = fontWeight,
                 color = if (caption.isFinal) textColor else textColor.copy(alpha = 0.6f)
             )
         }
