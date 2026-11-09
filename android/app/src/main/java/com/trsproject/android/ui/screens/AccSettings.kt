@@ -36,6 +36,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -43,15 +48,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import io.github.jan.supabase.auth.auth
+import kotlinx.serialization.json.jsonPrimitive
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountScreen(
     modifier: Modifier = Modifier,
-    userName: String = "Alice Smith",
-    userEmail: String = "alice.smith@example.com",
-    userPhone: String = "+1 (555) 123-4567",
+    userName: String = "User",
+    userEmail: String = "",
+    userPhone: String = "",
     onBack: () -> Unit = {},
     onSignOut: () -> Unit = {},
     onNavigateToPersonalInfo: () -> Unit = {},
@@ -61,6 +69,38 @@ fun AccountScreen(
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+
+    var name by remember { mutableStateOf(userName) }
+    var email by remember { mutableStateOf(userEmail) }
+    var phone by remember { mutableStateOf(userPhone) }
+
+    // Dynamically fetch signed in user's profile from Supabase
+    LaunchedEffect(Unit) {
+        try {
+            val user = SupabaseService.client.auth.currentUserOrNull()
+            if (user != null) {
+                val profile = SupabaseService.fetchUserProfile(user.id)
+
+                val userMetaName = try {
+                    user.userMetadata?.get("full_name")?.jsonPrimitive?.content
+                } catch (e: Exception) {
+                    null
+                }
+
+                val fetchedName = profile.fullName.orEmpty().ifBlank {
+                    profile.displayName.orEmpty().ifBlank {
+                        userMetaName ?: user.email?.substringBefore("@") ?: "User"
+                    }
+                }
+
+                name = fetchedName
+                email = profile.email.orEmpty().ifBlank { user.email.orEmpty() }
+                phone = profile.phoneNumber.orEmpty().ifBlank { "No phone number set" }
+            }
+        } catch (e: Exception) {
+            // Keep default values if unauthenticated or offline
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -104,7 +144,7 @@ fun AccountScreen(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
-                                text = userName.take(1).uppercase(),
+                                text = name.take(1).uppercase().ifBlank { "U" },
                                 style = MaterialTheme.typography.headlineMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -116,22 +156,26 @@ fun AccountScreen(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = userName,
+                            text = name,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = userEmail,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = userPhone,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
+                        if (email.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = email,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (phone.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = phone,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
                     }
                 }
             }

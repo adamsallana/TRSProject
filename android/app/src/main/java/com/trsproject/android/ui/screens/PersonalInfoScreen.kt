@@ -57,10 +57,10 @@ fun PersonalInfoScreen(
     val coroutineScope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
-    var fullName by remember { mutableStateOf(initialProfile.fullName) }
-    var email by remember { mutableStateOf(initialProfile.email) }
-    var phoneNumber by remember { mutableStateOf(initialProfile.phoneNumber) }
-    var trsRelayNumber by remember { mutableStateOf(initialProfile.trsRelayNumber) }
+    var fullName by remember { mutableStateOf(initialProfile.fullName.orEmpty()) }
+    var email by remember { mutableStateOf(initialProfile.email.orEmpty()) }
+    var phoneNumber by remember { mutableStateOf(initialProfile.phoneNumber.orEmpty()) }
+    var trsRelayNumber by remember { mutableStateOf(initialProfile.trsRelayNumber.orEmpty()) }
     var isSaving by remember { mutableStateOf(false) }
 
     var isLoading by remember { mutableStateOf(true) }
@@ -81,10 +81,10 @@ fun PersonalInfoScreen(
 
             val profile = SupabaseService.fetchUserProfile(user.id)
 
-            fullName = profile.fullName
-            email = profile.email.ifBlank { user.email ?: "" }
-            phoneNumber = profile.phoneNumber
-            trsRelayNumber = profile.trsRelayNumber
+            fullName = profile.fullName.orEmpty()
+            email = profile.email.orEmpty().ifBlank { user.email ?: "" }
+            phoneNumber = profile.phoneNumber.orEmpty()
+            trsRelayNumber = profile.trsRelayNumber.orEmpty()
 
         } catch (e: Exception) {
             Toast.makeText(

@@ -176,4 +176,52 @@ object SupabaseService {
             }
         }
 
+
+    // --- Contact Operations ---
+
+    suspend fun fetchContacts(userId: String): List<com.trsproject.android.data.model.Contact> =
+        withContext(Dispatchers.IO) {
+            try {
+                if (BuildConfig.SUPABASE_URL.isBlank()) {
+                    return@withContext listOf(
+                        com.trsproject.android.data.model.Contact("1", userId, "Contact", "+18282751713")
+                    )
+                }
+                val list = client.postgrest["contacts"]
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                        }
+                    }
+                    .decodeList<com.trsproject.android.data.model.Contact>()
+
+                if (list.isEmpty()) {
+                    listOf(
+                        com.trsproject.android.data.model.Contact("1", userId, "Contact", "+18282751713")
+                    )
+                } else {
+                    list
+                }
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to fetch contacts", e)
+                listOf(
+                    com.trsproject.android.data.model.Contact("1", userId, "Contact", "+18282751713")
+                )
+            }
+        }
+
+    suspend fun createContact(contact: com.trsproject.android.data.model.Contact): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (BuildConfig.SUPABASE_URL.isBlank()) {
+                    return@withContext true
+                }
+                client.postgrest["contacts"].insert(contact)
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to create contact", e)
+                false
+            }
+        }
+
 }

@@ -1,5 +1,6 @@
 package com.trsproject.android.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,19 +13,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,26 +39,29 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.trsproject.android.data.model.Contact
+import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
-
-data class Contact(
-    val id: String,
-    val name: String,
-    val phoneNumber: String
-)
+import io.github.jan.supabase.auth.auth
+import kotlinx.coroutines.launch
+import java.util.UUID
 
 val sampleFavorites = listOf(
-    Contact("1", "Contact", "+18282751713")
+    Contact("1", "", "Contact", "+18282751713")
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -64,8 +73,28 @@ fun HomeScreen(
     onAccountClick: () -> Unit = {},
     onSignOut: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var incomingCallContact by remember { mutableStateOf<Contact?>(null) }
     val callService = remember { CallService() }
+
+    val contactList = remember { mutableStateListOf<Contact>() }
+    var isAddContactDialogOpen by remember { mutableStateOf(false) }
+    var newContactName by remember { mutableStateOf("") }
+    var newContactPhone by remember { mutableStateOf("") }
+    var isSavingContact by remember { mutableStateOf(false) }
+
+    // Fetch contacts from Supabase backend on launch
+    LaunchedEffect(Unit) {
+        val userId = try {
+            SupabaseService.client.auth.currentUserOrNull()?.id ?: "user_default"
+        } catch (e: Exception) {
+            "user_default"
+        }
+        val fetched = SupabaseService.fetchContacts(userId)
+        contactList.clear()
+        contactList.addAll(fetched)
+    }
 
     // Listen for real incoming call events from server over WebSocket
     LaunchedEffect(Unit) {
@@ -75,12 +104,107 @@ fun HomeScreen(
                     val parts = msg.text.split(":")
                     val callerNum = parts.getOrNull(1) ?: "+17818690609"
                     val callerName = parts.getOrNull(2) ?: "Contact"
-                    incomingCallContact = Contact("inc", callerName, callerNum)
+                    incomingCallContact = Contact("inc", "", callerName, callerNum)
                 }
             }
         } catch (e: Exception) {
             // Ignore connection errors on home screen
         }
+    }
+
+    // Add New Contact Dialog Overlay
+    if (isAddContactDialogOpen) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSavingContact) {
+                    isAddContactDialogOpen = false
+                    newContactName = ""
+                    newContactPhone = ""
+                }
+            },
+            title = {
+                Text(
+                    text = "Add New Contact",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = newContactName,
+                        onValueChange = { newContactName = it },
+                        label = { Text("Contact Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newContactPhone,
+                        onValueChange = { newContactPhone = it },
+                        label = { Text("Phone Number") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newContactName.isBlank() || newContactPhone.isBlank()) {
+                            Toast.makeText(context, "Please enter both name and phone number", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+
+                        isSavingContact = true
+                        coroutineScope.launch {
+                            val currentUserId = try {
+                                SupabaseService.client.auth.currentUserOrNull()?.id ?: "user_default"
+                            } catch (e: Exception) {
+                                "user_default"
+                            }
+
+                            val newContact = Contact(
+                                id = UUID.randomUUID().toString(),
+                                userId = currentUserId,
+                                name = newContactName.trim(),
+                                phoneNumber = newContactPhone.trim()
+                            )
+
+                            val success = SupabaseService.createContact(newContact)
+                            if (success) {
+                                contactList.add(0, newContact)
+                                Toast.makeText(context, "Contact created successfully!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                // Add locally if backend fails
+                                contactList.add(0, newContact)
+                                Toast.makeText(context, "Contact saved locally", Toast.LENGTH_SHORT).show()
+                            }
+
+                            isSavingContact = false
+                            isAddContactDialogOpen = false
+                            newContactName = ""
+                            newContactPhone = ""
+                        }
+                    },
+                    enabled = !isSavingContact
+                ) {
+                    Text(if (isSavingContact) "Saving..." else "Save")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        isAddContactDialogOpen = false
+                        newContactName = ""
+                        newContactPhone = ""
+                    },
+                    enabled = !isSavingContact
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Incoming Call Dialog Overlay
@@ -97,13 +221,13 @@ fun HomeScreen(
             text = {
                 Column {
                     Text(
-                        text = contact.name,
+                        text = contact.name.orEmpty(),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = contact.phoneNumber,
+                        text = contact.phoneNumber.orEmpty(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -137,6 +261,12 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("Favorite Contacts") },
                 actions = {
+                    IconButton(onClick = { isAddContactDialogOpen = true }) {
+                        Icon(
+                            imageVector = Icons.Default.PersonAdd,
+                            contentDescription = "Add Contact"
+                        )
+                    }
                     IconButton(onClick = onAccountClick) {
                         Icon(
                             imageVector = Icons.Default.AccountCircle,
@@ -148,6 +278,18 @@ fun HomeScreen(
                     }
                 }
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { isAddContactDialogOpen = true },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Create Contact"
+                )
+            }
         },
         modifier = modifier
     ) { innerPadding ->
@@ -162,7 +304,7 @@ fun HomeScreen(
             // Test button to trigger simulated incoming call
             OutlinedButton(
                 onClick = {
-                    incomingCallContact = Contact("inc", "Contact", "+17818690609")
+                    incomingCallContact = Contact("inc", "", "Contact", "+17818690609")
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -171,10 +313,12 @@ fun HomeScreen(
                 Text("Test Incoming Call Dialog")
             }
 
+            val displayList = if (contactList.isNotEmpty()) contactList else contacts
+
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(contacts, key = { it.id }) { contact ->
+                items(displayList, key = { it.id }) { contact ->
                     ContactRow(
                         contact = contact,
                         onCallClick = { onCallClick(contact) }
@@ -210,7 +354,7 @@ fun ContactRow(
                 modifier = Modifier.padding(end = 12.dp)
             ) {
                 Text(
-                    text = contact.name.take(1).uppercase(),
+                    text = contact.name.orEmpty().take(1).ifBlank { "C" }.uppercase(),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -222,13 +366,13 @@ fun ContactRow(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = contact.name,
+                    text = contact.name.orEmpty(),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = contact.phoneNumber,
+                    text = contact.phoneNumber.orEmpty(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

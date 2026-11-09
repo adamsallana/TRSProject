@@ -17,7 +17,7 @@ import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
 import com.trsproject.android.ui.screens.CaptionSettingsScreen
-import com.trsproject.android.ui.screens.Contact
+import com.trsproject.android.data.model.Contact
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.NotificationsScreen

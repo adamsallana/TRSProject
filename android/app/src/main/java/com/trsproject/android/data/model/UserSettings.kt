@@ -3,21 +3,15 @@ package com.trsproject.android.data.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-
-
-
 @Serializable
 data class UserProfile(
     @SerialName("id") val id: String = "",
-    @SerialName("display_name") val displayName: String = "",
-    @SerialName("full_name") val fullName: String = "",
-    @SerialName("email") val email: String = "",
-    @SerialName("phone_number") val phoneNumber: String = "",
-    @SerialName("trs_relay_number") val trsRelayNumber: String = ""
+    @SerialName("display_name") val displayName: String? = "",
+    @SerialName("full_name") val fullName: String? = "",
+    @SerialName("email") val email: String? = "",
+    @SerialName("phone_number") val phoneNumber: String? = "",
+    @SerialName("trs_relay_number") val trsRelayNumber: String? = ""
 )
-
-
-
 
 @Serializable
 data class CaptionPreferences(
