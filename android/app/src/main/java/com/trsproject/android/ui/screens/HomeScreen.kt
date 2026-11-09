@@ -415,17 +415,6 @@ fun HomeScreen(
                     .padding(innerPadding)
                     .padding(horizontal = 16.dp)
             ) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Test button
-                OutlinedButton(
-                    onClick = onTestIncomingCall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                ) {
-                    Text("Test Incoming Call")
-                }
 
                 // Header with Edit Toggle
                 Row(
