@@ -166,14 +166,22 @@ fun TranscriptionScreen(
                 val spokenText = matches?.firstOrNull()
                 android.util.Log.d("SpeechRecognizer", "Speech recognized on results: $spokenText")
                 if (!spokenText.isNullOrBlank()) {
+                    val msgId = System.currentTimeMillis().toInt()
                     val myMessage = CaptionMessage(
-                        id = System.currentTimeMillis().toInt(),
+                        id = msgId,
                         senderName = "Me",
                         text = spokenText,
                         isMe = true
                     )
                     visibleCaptions = visibleCaptions + myMessage
-                    webSocket?.send(spokenText)
+
+                    val jsonPayload = org.json.JSONObject().apply {
+                        put("id", msgId)
+                        put("senderName", "Me")
+                        put("text", spokenText)
+                        put("isMe", true)
+                    }.toString()
+                    webSocket?.send(jsonPayload)
                 }
                 if (onCall && !isMuted) {
                     try {
@@ -210,7 +218,12 @@ fun TranscriptionScreen(
     LaunchedEffect(onCall, displayName) {
         if (onCall) {
             val socket = callService.connectTranscriptionWebSocket(displayName) { msg ->
-                visibleCaptions = visibleCaptions + msg
+                val isDuplicate = visibleCaptions.any { existing ->
+                    existing.id == msg.id || (msg.isMe && existing.isMe && existing.text == msg.text)
+                }
+                if (!isDuplicate) {
+                    visibleCaptions = visibleCaptions + msg
+                }
             }
             webSocket = socket
             try {
@@ -326,14 +339,21 @@ fun TranscriptionScreen(
                         onClick = {
                             if (inputText.isNotBlank()) {
                                 val textToSend = inputText.trim()
+                                val msgId = System.currentTimeMillis().toInt()
                                 val myCaption = CaptionMessage(
-                                    id = System.currentTimeMillis().toInt(),
+                                    id = msgId,
                                     senderName = "Me",
                                     text = textToSend,
                                     isMe = true
                                 )
                                 visibleCaptions = visibleCaptions + myCaption
-                                webSocket?.send(textToSend)
+                                val jsonPayload = org.json.JSONObject().apply {
+                                    put("id", msgId)
+                                    put("senderName", "Me")
+                                    put("text", textToSend)
+                                    put("isMe", true)
+                                }.toString()
+                                webSocket?.send(jsonPayload)
                                 inputText = ""
                             }
                         }

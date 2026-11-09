@@ -110,7 +110,7 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                     val id = json.optInt("id", System.currentTimeMillis().toInt())
                     val senderName = json.optString("senderName", contactName)
                     val transcriptText = json.optString("text", "")
-                    val isMe = json.optBoolean("isMe", false)
+                    val isMe = json.optBoolean("isMe", false) || senderName.equals("Me", ignoreCase = true)
 
                     if (transcriptText.isNotBlank()) {
                         onTranscriptReceived(
