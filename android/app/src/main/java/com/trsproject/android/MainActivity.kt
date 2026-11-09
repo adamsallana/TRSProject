@@ -16,8 +16,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import com.trsproject.android.data.model.ActiveCall
 import com.trsproject.android.data.model.CallDirection
+import com.trsproject.android.data.model.UserProfile
 import com.trsproject.android.data.remote.SupabaseService
 import io.github.jan.supabase.auth.auth
 import com.trsproject.android.network.CallEvent
@@ -74,6 +76,7 @@ private val IN_CALL_SCREENS = setOf(Screen.OUTGOING_CALL, Screen.INCOMING_CALL, 
 
 @Composable
 fun MainApp() {
+    val context = LocalContext.current
     var currentScreen by remember { mutableStateOf(Screen.AUTH) }
     var activeCall by remember { mutableStateOf<ActiveCall?>(null) }
 
@@ -142,13 +145,41 @@ fun MainApp() {
             Screen.HOME -> HomeScreen(
                 modifier = Modifier.padding(innerPadding),
                 onCallClick = { contact ->
-                    val number = contact.phoneNumber.orEmpty()
-                    activeCall = ActiveCall(
-                        direction = CallDirection.OUTGOING,
-                        name = contact.name?.ifBlank { null } ?: number,
-                        phoneNumber = number
-                    )
-                    currentScreen = Screen.OUTGOING_CALL
+                    appScope.launch {
+                        val user = try { SupabaseService.client.auth.currentUserOrNull() } catch (e: Exception) { null }
+                        val profile = user?.let { try { SupabaseService.fetchUserProfile(it.id) } catch (e: Exception) { null } }
+
+                        val userRelayNumber = profile?.trsRelayNumber?.ifBlank { null }
+                            ?: profile?.phoneNumber?.ifBlank { null }
+
+                        if (userRelayNumber.isNullOrBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: No phone number configured for your account. Please set up your phone numbers in Account Settings.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            currentScreen = Screen.PERSONAL_INFO
+                            return@launch
+                        }
+
+                        val number = contact.phoneNumber.orEmpty()
+                        if (number.isBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: Contact has no valid phone number.",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return@launch
+                        }
+
+                        activeCall = ActiveCall(
+                            direction = CallDirection.OUTGOING,
+                            name = contact.name?.ifBlank { null } ?: number,
+                            phoneNumber = number,
+                            userRelayNumber = userRelayNumber
+                        )
+                        currentScreen = Screen.OUTGOING_CALL
+                    }
                 },
                 onAccountClick = {
                     currentScreen = Screen.ACCOUNT
@@ -157,6 +188,7 @@ fun MainApp() {
                     appScope.launch { callService.triggerTestIncomingCall() }
                 },
                 onSignOut = {
+                    SupabaseService.clearCache()
                     currentScreen = Screen.AUTH
                 }
             )
@@ -169,6 +201,7 @@ fun MainApp() {
                     OutgoingCallScreen(
                         contactName = call.name,
                         phoneNumber = call.phoneNumber,
+                        userRelayNumber = call.userRelayNumber,
                         callEvents = callEvents,
                         callService = callService,
                         modifier = Modifier.padding(innerPadding),
@@ -215,7 +248,10 @@ fun MainApp() {
             Screen.ACCOUNT -> AccountScreen(
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.HOME },
-                onSignOut = { currentScreen = Screen.AUTH },
+                onSignOut = {
+                    SupabaseService.clearCache()
+                    currentScreen = Screen.AUTH
+                },
                 onNavigateToPersonalInfo = { currentScreen = Screen.PERSONAL_INFO },
                 onNavigateToCaptionSettings = { currentScreen = Screen.CAPTION_SETTINGS },
                 onNavigateToNotifications = { currentScreen = Screen.NOTIFICATIONS },

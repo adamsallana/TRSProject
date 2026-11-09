@@ -26,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
@@ -86,33 +87,41 @@ fun HomeScreen(
     var newContactPhone by remember { mutableStateOf("") }
     var isSavingContact by remember { mutableStateOf(false) }
     var userInitial by remember { mutableStateOf("U") }
+    val hasCachedData = remember { SupabaseService.hasCachedContacts() }
+    var isLoadingHome by remember { mutableStateOf(!hasCachedData) }
 
     // Fetch user profile and contacts from Supabase backend on launch
     LaunchedEffect(Unit) {
-        val user = try {
-            SupabaseService.client.auth.currentUserOrNull()
-        } catch (e: Exception) {
-            null
-        }
-
-        val userId = user?.id ?: "user_default"
-        val fetched = SupabaseService.fetchContacts(userId)
-        contactList.clear()
-        contactList.addAll(fetched)
-
-        if (user != null) {
-            try {
-                val profile = SupabaseService.fetchUserProfile(user.id)
-                val rawName: String? = profile.fullName?.takeIf { it.isNotBlank() }
-                    ?: profile.displayName?.takeIf { it.isNotBlank() }
-                    ?: user.email?.takeIf { it.isNotBlank() }
-
-                if (!rawName.isNullOrBlank()) {
-                    userInitial = rawName.trim().first().uppercase().toString()
-                }
+        try {
+            val user = try {
+                SupabaseService.client.auth.currentUserOrNull()
             } catch (e: Exception) {
-                // Keep default initial if fetch fails
+                null
             }
+
+            val userId = user?.id ?: "user_default"
+            val fetched = SupabaseService.fetchContacts(userId)
+            contactList.clear()
+            contactList.addAll(fetched)
+
+            if (user != null) {
+                try {
+                    val profile = SupabaseService.fetchUserProfile(user.id)
+                    val rawName: String? = profile.fullName?.takeIf { it.isNotBlank() }
+                        ?: profile.displayName?.takeIf { it.isNotBlank() }
+                        ?: user.email?.takeIf { it.isNotBlank() }
+
+                    if (!rawName.isNullOrBlank()) {
+                        userInitial = rawName.trim().first().uppercase().toString()
+                    }
+                } catch (e: Exception) {
+                    // Keep default initial if fetch fails
+                }
+            }
+        } catch (e: Exception) {
+            // Keep empty contact list or fallback
+        } finally {
+            isLoadingHome = false
         }
     }
 
@@ -168,11 +177,13 @@ fun HomeScreen(
                                 "user_default"
                             }
 
+                            val formattedPhone = com.trsproject.android.network.formatToE164(newContactPhone.trim())
+
                             val newContact = Contact(
                                 id = UUID.randomUUID().toString(),
                                 userId = currentUserId,
                                 name = newContactName.trim(),
-                                phoneNumber = newContactPhone.trim()
+                                phoneNumber = formattedPhone
                             )
 
                             val success = SupabaseService.createContact(newContact)
@@ -257,43 +268,54 @@ fun HomeScreen(
         },
         modifier = modifier
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp)
-        ) {
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Test button: asks the server to broadcast a simulated incoming call,
-            // which opens the ringing screen through the normal call-event path
-            OutlinedButton(
-                onClick = onTestIncomingCall,
+        if (isLoadingHome) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp)
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
             ) {
-                Text("Test Incoming Call")
+                CircularProgressIndicator()
             }
-
-            Text(
-                text = "Contacts",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-
-            val displayList = if (contactList.isNotEmpty()) contactList else contacts
-
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = 16.dp)
             ) {
-                items(displayList, key = { it.id }) { contact ->
-                    ContactRow(
-                        contact = contact,
-                        onCallClick = { onCallClick(contact) }
-                    )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Test button: asks the server to broadcast a simulated incoming call,
+                // which opens the ringing screen through the normal call-event path
+                OutlinedButton(
+                    onClick = onTestIncomingCall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text("Test Incoming Call")
+                }
+
+                Text(
+                    text = "Contacts",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                val displayList = if (contactList.isNotEmpty()) contactList else contacts
+
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(displayList, key = { it.id }) { contact ->
+                        ContactRow(
+                            contact = contact,
+                            onCallClick = { onCallClick(contact) }
+                        )
+                    }
                 }
             }
         }

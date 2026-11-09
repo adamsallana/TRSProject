@@ -2,6 +2,7 @@ package com.trsproject.android.ui.screens
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,9 +63,12 @@ fun PersonalInfoScreen(
     var email by remember { mutableStateOf(initialProfile.email.orEmpty()) }
     var phoneNumber by remember { mutableStateOf(initialProfile.phoneNumber.orEmpty()) }
     var trsRelayNumber by remember { mutableStateOf(initialProfile.trsRelayNumber.orEmpty()) }
+    var phoneNumberError by remember { mutableStateOf<String?>(null) }
+    var trsRelayNumberError by remember { mutableStateOf<String?>(null) }
     var isSaving by remember { mutableStateOf(false) }
 
-    var isLoading by remember { mutableStateOf(true) }
+    val hasCache = remember { SupabaseService.hasCachedUserProfile() }
+    var isLoading by remember { mutableStateOf(!hasCache) }
 
 
     LaunchedEffect(Unit) {
@@ -97,9 +102,34 @@ fun PersonalInfoScreen(
         }
     }
 
-
-
     fun saveInfo() {
+        val trimmedPhone = phoneNumber.trim()
+        val trimmedRelay = trsRelayNumber.trim()
+
+        var hasError = false
+        if (trimmedPhone.isBlank()) {
+            phoneNumberError = "Personal phone number is required"
+            hasError = true
+        } else {
+            phoneNumberError = null
+        }
+
+        if (trimmedRelay.isBlank()) {
+            trsRelayNumberError = "TRS Relay (Twilio) phone number is required"
+            hasError = true
+        } else {
+            trsRelayNumberError = null
+        }
+
+        if (hasError) {
+            Toast.makeText(
+                context,
+                "Please enter both your personal phone number and TRS Relay number.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         isSaving = true
         coroutineScope.launch {
 
@@ -115,15 +145,17 @@ fun PersonalInfoScreen(
                 return@launch
             }
 
+            val formattedPhone = com.trsproject.android.network.formatToE164(trimmedPhone)
+            val formattedRelay = com.trsproject.android.network.formatToE164(trimmedRelay)
+
             val updated = UserProfile(
                 id = userId,
                 displayName = fullName,
                 fullName = fullName,
                 email = email,
-                phoneNumber = phoneNumber,
-                trsRelayNumber = trsRelayNumber
+                phoneNumber = formattedPhone,
+                trsRelayNumber = formattedRelay
             )
-
 
             val success = SupabaseService.updateUserProfile(updated)
             isSaving = false
@@ -159,74 +191,95 @@ fun PersonalInfoScreen(
         },
         modifier = modifier
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(scrollState)
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "Update your account details and assigned TRS relay contact information.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            OutlinedTextField(
-                value = fullName,
-                onValueChange = { fullName = it },
-                label = { Text("Full Name") },
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email Address") },
-                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = phoneNumber,
-                onValueChange = { phoneNumber = it },
-                label = { Text("Phone Number") },
-                leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = trsRelayNumber,
-                onValueChange = { trsRelayNumber = it },
-                label = { Text("TRS Relay Phone Number") },
-                leadingIcon = { Icon(Icons.Default.PhoneInTalk, contentDescription = null) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = { saveInfo() },
-                enabled = !isSaving && !isLoading,
+        if (isLoading) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .verticalScroll(scrollState)
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = if (isSaving) "Saving..." else "Save Changes",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    text = "Update your account details and assigned TRS relay contact information.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                OutlinedTextField(
+                    value = fullName,
+                    onValueChange = { fullName = it },
+                    label = { Text("Full Name") },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Email Address") },
+                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = phoneNumber,
+                    onValueChange = {
+                        phoneNumber = it
+                        if (it.isNotBlank()) phoneNumberError = null
+                    },
+                    label = { Text("Personal Phone Number") },
+                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                    singleLine = true,
+                    isError = phoneNumberError != null,
+                    supportingText = phoneNumberError?.let { err -> { Text(err, color = MaterialTheme.colorScheme.error) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = trsRelayNumber,
+                    onValueChange = {
+                        trsRelayNumber = it
+                        if (it.isNotBlank()) trsRelayNumberError = null
+                    },
+                    label = { Text("TRS Relay (Twilio) Phone Number") },
+                    leadingIcon = { Icon(Icons.Default.PhoneInTalk, contentDescription = null) },
+                    singleLine = true,
+                    isError = trsRelayNumberError != null,
+                    supportingText = trsRelayNumberError?.let { err -> { Text(err, color = MaterialTheme.colorScheme.error) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { saveInfo() },
+                    enabled = !isSaving && !isLoading,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Text(
+                        text = if (isSaving) "Saving..." else "Save Changes",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }

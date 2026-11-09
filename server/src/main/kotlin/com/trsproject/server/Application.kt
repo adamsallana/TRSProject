@@ -114,6 +114,18 @@ private val TERMINAL_STATUSES = setOf("completed", "busy", "no-answer", "cancele
 
 private const val TEST_SID_PREFIX = "TEST-"
 
+private fun toE164(number: String?): String {
+    if (number.isNullOrBlank()) return ""
+    val trimmed = number.trim()
+    val digits = trimmed.filter { it.isDigit() }
+    return when {
+        trimmed.startsWith("+") -> "+$digits"
+        digits.length == 10 -> "+1$digits"
+        digits.length == 11 && digits.startsWith("1") -> "+$digits"
+        else -> if (digits.isNotBlank()) "+$digits" else trimmed
+    }
+}
+
 /**
  * How the remote party's speech is captioned:
  * - REALTIME (default): Twilio Real-Time Transcription streams interim + final text for the
@@ -587,13 +599,28 @@ fun Application.module() {
             }
 
             try {
-                val fromNumber = request.fromPhoneNumber?.takeIf { it.isNotBlank() } ?: "+12182745801"
+                val envFromNumber = System.getenv("TWILIO_PHONE_NUMBER")?.takeIf { it.isNotBlank() }
+                val rawFromNumber = request.fromPhoneNumber?.takeIf { it.isNotBlank() } ?: envFromNumber
+
+                if (rawFromNumber.isNullOrBlank()) {
+                    call.respond(
+                        MakeCallResponse(
+                            status = "error",
+                            error = "No phone number specified for call initiation. Please configure your phone number in Account Settings."
+                        )
+                    )
+                    return@post
+                }
+
+                val formattedTo = toE164(request.toPhoneNumber)
+                val formattedFrom = toE164(rawFromNumber)
+
                 val webhook = request.webhookUrl?.takeIf { it.isNotBlank() }
                     ?: "$publicBaseUrl/api/twiml"
 
                 val twilioCall = Call.creator(
-                    PhoneNumber(request.toPhoneNumber),
-                    PhoneNumber(fromNumber),
+                    PhoneNumber(formattedTo),
+                    PhoneNumber(formattedFrom),
                     URI.create(webhook)
                 )
                     .setStatusCallback(URI.create("$publicBaseUrl/api/call-status"))
@@ -601,7 +628,7 @@ fun Application.module() {
                     .setStatusCallbackMethod(HttpMethod.POST)
                     .create()
 
-                trackedCalls[twilioCall.sid] = TrackedCall("outgoing", request.toPhoneNumber)
+                trackedCalls[twilioCall.sid] = TrackedCall("outgoing", formattedTo)
 
                 call.respond(
                     MakeCallResponse(

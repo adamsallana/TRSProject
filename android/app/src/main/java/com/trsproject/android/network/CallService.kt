@@ -28,6 +28,19 @@ data class TwilioCallResult(
 internal fun normalizePhoneNumber(number: String?): String =
     number.orEmpty().filter { it.isDigit() }.takeLast(10)
 
+/** Formats raw phone number input into standard E.164 format (e.g. "+18282751713"). */
+fun formatToE164(number: String?): String {
+    if (number.isNullOrBlank()) return ""
+    val trimmed = number.trim()
+    val digits = trimmed.filter { it.isDigit() }
+    return when {
+        trimmed.startsWith("+") -> "+$digits"
+        digits.length == 10 -> "+1$digits"
+        digits.length == 11 && digits.startsWith("1") -> "+$digits"
+        else -> if (digits.isNotBlank()) "+$digits" else trimmed
+    }
+}
+
 internal fun phoneNumbersMatch(a: String?, b: String?): Boolean {
     val na = normalizePhoneNumber(a)
     return na.isNotEmpty() && na == normalizePhoneNumber(b)
@@ -140,9 +153,11 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         fromPhoneNumber: String? = null,
         webhookUrl: String? = null
     ): TwilioCallResult {
+        val formattedTo = formatToE164(toPhoneNumber)
+        val formattedFrom = formatToE164(fromPhoneNumber)
         val payload = JSONObject().apply {
-            put("toPhoneNumber", toPhoneNumber)
-            if (!fromPhoneNumber.isNullOrBlank()) put("fromPhoneNumber", fromPhoneNumber)
+            put("toPhoneNumber", formattedTo)
+            if (formattedFrom.isNotBlank()) put("fromPhoneNumber", formattedFrom)
             if (!webhookUrl.isNullOrBlank()) put("webhookUrl", webhookUrl)
         }
         return try {

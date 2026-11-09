@@ -46,6 +46,7 @@ private const val LOST_CALL_RECOVERY_MS = 30_000L
 fun OutgoingCallScreen(
     contactName: String,
     phoneNumber: String,
+    userRelayNumber: String? = null,
     callEvents: Flow<CallEvent>,
     modifier: Modifier = Modifier,
     callService: CallService = remember { CallService() },
@@ -80,7 +81,7 @@ fun OutgoingCallScreen(
                 }
             }
         }
-        val result = callService.makeCall(toPhoneNumber = phoneNumber)
+        val result = callService.makeCall(toPhoneNumber = phoneNumber, fromPhoneNumber = userRelayNumber)
         when {
             result.success && result.callSid != null -> callSid = result.callSid
             callSid != null -> Unit // already learned the sid from a status event

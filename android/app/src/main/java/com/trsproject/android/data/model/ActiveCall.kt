@@ -8,5 +8,7 @@ data class ActiveCall(
     val name: String,
     val phoneNumber: String,
     /** Twilio CallSid. Null for an outgoing call until the server has created it. */
-    val callSid: String? = null
+    val callSid: String? = null,
+    /** Optional from/relay phone number associated with the user's account. */
+    val userRelayNumber: String? = null
 )
