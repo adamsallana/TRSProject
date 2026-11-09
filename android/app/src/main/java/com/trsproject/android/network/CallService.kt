@@ -135,9 +135,15 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         TwilioCallResult(success = false, callSid = callSid, errorMessage = e.localizedMessage ?: "Network error occurred")
     }
 
+    /** "&[param]=<this user's line number>", or "" if they don't have one. */
+    private fun lineQuery(param: String): String =
+        lineNumber?.takeIf { it.isNotBlank() }
+            ?.let { "&$param=" + java.net.URLEncoder.encode(it, "UTF-8") }
+            .orEmpty()
+
     suspend fun makeCall(
         toPhoneNumber: String,
-        fromPhoneNumber: String? = null,
+        fromPhoneNumber: String? = lineNumber,
         webhookUrl: String? = null
     ): TwilioCallResult {
         val payload = JSONObject().apply {
@@ -186,7 +192,8 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
     suspend fun triggerTestIncomingCall(): Boolean = withContext(Dispatchers.IO) {
         for (targetUrl in candidateBaseUrls()) {
             try {
-                val request = Request.Builder().url("$targetUrl/api/trigger-incoming-call").get().build()
+                val url = "$targetUrl/api/trigger-incoming-call" + lineQuery("to").replaceFirst('&', '?')
+                val request = Request.Builder().url(url).get().build()
                 client.newCall(request).execute().use { if (it.isSuccessful) return@withContext true }
             } catch (e: Exception) {
                 android.util.Log.e("CallService", "triggerTestIncomingCall failed on $targetUrl: ${e.message}")
@@ -244,7 +251,7 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         onTranscriptReceived: (CaptionMessage) -> Unit = {}
     ): okhttp3.WebSocket {
         val encodedContact = java.net.URLEncoder.encode(contactName, "UTF-8")
-        val wsUrl = "$wsBaseUrl/transcribe?contact=$encodedContact"
+        val wsUrl = "$wsBaseUrl/transcribe?contact=$encodedContact" + lineQuery("number")
 
         val request = Request.Builder().url(wsUrl).build()
         return wsClient.newWebSocket(request, object : okhttp3.WebSocketListener() {
@@ -332,6 +339,14 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
     }
 
     companion object {
+        /**
+         * The signed-in user's own Twilio number (their profile's TRS relay number). The server
+         * only sends this app the calls and captions for this number, and outgoing calls use it as
+         * caller ID. Null means the server's shared default number. Set at sign-in.
+         */
+        @Volatile
+        var lineNumber: String? = null
+
         private fun getHttpBaseUrl(): String {
             val wsUrl = try {
                 BuildConfig.SERVER_WS_URL
