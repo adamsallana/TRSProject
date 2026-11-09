@@ -26,7 +26,7 @@ android {
     buildTypes {
         release {
             // TODO: replace with the real Render URL once the server is deployed.
-            buildConfigField("String", "SERVER_WS_URL", "\"wss://REPLACE_WITH_RENDER_URL/transcribe\"")
+            buildConfigField("String", "SERVER_WS_URL", "\"wss://trsproject.onrender.com/transcribe\"")
             optimization {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")

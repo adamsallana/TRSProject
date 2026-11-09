@@ -248,7 +248,7 @@ fun Application.module() {
 
                 val fromNumber = request.fromPhoneNumber?.takeIf { it.isNotBlank() } ?: "+12182745801"
                 val webhook = request.webhookUrl?.takeIf { it.isNotBlank() }
-                    ?: "https://trs-speech-2205.twil.io/speech"
+                    ?: "https://trsproject.onrender.com/api/twiml"
 
                 val twilioCall = Call.creator(
                     PhoneNumber(request.toPhoneNumber),
