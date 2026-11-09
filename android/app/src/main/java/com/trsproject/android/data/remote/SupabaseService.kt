@@ -10,9 +10,12 @@ import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
+import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.util.Log
+
+import kotlin.time.Duration.Companion.seconds
 
 object SupabaseService {
 
@@ -22,6 +25,8 @@ object SupabaseService {
             supabaseUrl = BuildConfig.SUPABASE_URL,
             supabaseKey = BuildConfig.SUPABASE_ANON_KEY
         ) {
+            httpEngine = OkHttp.create()
+            requestTimeout = 30.seconds
             install(Postgrest)
             install(Auth)
         }

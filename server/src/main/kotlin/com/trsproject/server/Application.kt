@@ -54,7 +54,10 @@ data class EndCallRequest(
     val callSid: String? = null,
     val sid: String? = null,
     val call_sid: String? = null,
-    val toPhoneNumber: String? = null
+    val toPhoneNumber: String? = null,
+    val phoneNumber: String? = null,
+    val status: String? = null,
+    val action: String? = null
 )
 
 @Serializable
@@ -95,7 +98,10 @@ suspend fun broadcastTranscript(message: TranscriptMessage) {
 fun Application.module() {
     install(WebSockets)
     install(ContentNegotiation) {
-        json()
+        json(Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+        })
     }
 
     val accountSid = System.getenv("TWILIO_ACCOUNT_SID")
@@ -288,16 +294,23 @@ fun Application.module() {
 
         // Endpoint to end an active call via Twilio REST API
         post("/api/end-call") {
-            val request = try {
-                call.receive<EndCallRequest>()
+            var targetCallSid: String? = null
+            var receiveError: String? = null
+
+            try {
+                val request = call.receive<EndCallRequest>()
+                targetCallSid = request.callSid
+                    ?: request.sid
+                    ?: request.call_sid
             } catch (e: Exception) {
-                EndCallRequest()
+                receiveError = e.localizedMessage
+                println(">>> [SERVER] END CALL receive JSON exception: ${e.message}")
             }
 
-            val targetCallSid = request.callSid
-                ?: request.sid
-                ?: request.call_sid
-                ?: call.request.queryParameters["callSid"]
+            if (targetCallSid.isNullOrBlank()) {
+                targetCallSid = call.request.queryParameters["callSid"]
+                    ?: call.request.queryParameters["sid"]
+            }
 
             val currentAccountSid = System.getenv("TWILIO_ACCOUNT_SID")
             val currentAuthToken = System.getenv("TWILIO_AUTH_TOKEN")
@@ -314,7 +327,7 @@ fun Application.module() {
             }
 
             if (targetCallSid.isNullOrBlank()) {
-                println(">>> [SERVER] END CALL WARNING: No callSid provided in request")
+                println(">>> [SERVER] END CALL WARNING: No callSid provided in request (receiveError=$receiveError)")
                 call.respond(
                     EndCallResponse(
                         status = "error",

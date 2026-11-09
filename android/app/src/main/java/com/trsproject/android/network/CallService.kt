@@ -132,8 +132,9 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                     val requestBody = jsonPayload.toString()
                         .toRequestBody("application/json; charset=utf-8".toMediaType())
 
+                    val sidQuery = if (!callSid.isNullOrBlank()) "?callSid=$callSid" else ""
                     val request = Request.Builder()
-                        .url("$targetUrl$endpoint")
+                        .url("$targetUrl$endpoint$sidQuery")
                         .post(requestBody)
                         .build()
 

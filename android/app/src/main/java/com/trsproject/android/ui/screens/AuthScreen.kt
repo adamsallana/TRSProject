@@ -108,9 +108,14 @@ fun AuthScreen(
                     onSignInSuccess()
                 }
             } catch (e: Exception) {
+                val errorMessage = when {
+                    e.message?.contains("timed out", ignoreCase = true) == true ->
+                        "Network request timed out. Please check your internet connection or try again."
+                    else -> e.message ?: "Authentication failed. Please try again."
+                }
                 Toast.makeText(
                     context,
-                    e.message ?: "Authentication failed. Please try again.",
+                    errorMessage,
                     Toast.LENGTH_LONG
                 ).show()
             } finally {
