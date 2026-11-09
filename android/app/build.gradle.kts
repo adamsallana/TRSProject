@@ -1,3 +1,12 @@
+import java.util.Properties
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -21,6 +30,11 @@ android {
 
         // Emulator alias for the host machine's localhost; overridden for release below.
         buildConfigField("String", "SERVER_WS_URL", "\"ws://10.0.2.2:8080/transcribe\"")
+        val supabaseUrl = localProperties.getProperty("SUPABASE_URL", "")
+        val supabaseKey = localProperties.getProperty("SUPABASE_ANON_KEY", "")
+
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseKey\"")
     }
 
     buildTypes {
