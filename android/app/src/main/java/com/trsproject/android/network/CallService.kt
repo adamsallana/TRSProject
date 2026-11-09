@@ -62,26 +62,94 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
                     } else null
 
                     if (response.isSuccessful) {
-                        val status = jsonResponse?.optString("status") ?: "success"
-                        val callSid = jsonResponse?.optString("callSid")
-                        val error = jsonResponse?.optString("error")
+                        val status = jsonResponse?.optString("status")?.ifBlank { null } ?: "success"
+                        val extractedSid = jsonResponse?.let { json ->
+                            sequenceOf("callSid", "sid", "CallSid", "call_sid")
+                                .map { json.optString(it, "") }
+                                .firstOrNull { it.isNotBlank() }
+                                ?: json.optJSONObject("call")?.optString("sid", "")?.takeIf { it.isNotBlank() }
+                        }
+                        val error = jsonResponse?.optString("error")?.ifBlank { null }
 
-                        if (status == "success" && !callSid.isNullOrBlank()) {
-                            return@withContext TwilioCallResult(success = true, callSid = callSid)
+                        if (status == "success" && !extractedSid.isNullOrBlank()) {
+                            android.util.Log.d("CallService", "makeCall successful! extractedSid=$extractedSid")
+                            return@withContext TwilioCallResult(success = true, callSid = extractedSid)
                         } else {
+                            android.util.Log.e("CallService", "makeCall response error: $error, rawBody=$responseBodyStr")
                             return@withContext TwilioCallResult(
                                 success = false,
-                                errorMessage = error ?: "Unknown server response"
+                                errorMessage = error ?: "Server returned success but missing CallSid"
                             )
                         }
                     } else {
-                        val errorMsg = jsonResponse?.optString("error")
+                        val errorMsg = jsonResponse?.optString("error")?.ifBlank { null }
                             ?: "HTTP ${response.code}: ${response.message}"
                         return@withContext TwilioCallResult(success = false, errorMessage = errorMsg)
                     }
                 }
             } catch (e: Exception) {
                 lastError = e.localizedMessage ?: "Network error occurred"
+            }
+        }
+        TwilioCallResult(
+            success = false,
+            errorMessage = lastError
+        )
+    }
+
+    suspend fun endCall(
+        callSid: String? = null,
+        toPhoneNumber: String? = null
+    ): TwilioCallResult = withContext(Dispatchers.IO) {
+        val urlsToTry = mutableListOf(baseUrl)
+        if (baseUrl.contains("127.0.0.1")) {
+            urlsToTry.add(baseUrl.replace("127.0.0.1", "10.0.2.2"))
+        } else if (baseUrl.contains("10.0.2.2")) {
+            urlsToTry.add(baseUrl.replace("10.0.2.2", "127.0.0.1"))
+        }
+
+        val endpointsToTry = listOf("/api/end-call", "/api/hangup", "/api/call/end", "/api/calls/end")
+        var lastError: String? = null
+
+        for (targetUrl in urlsToTry) {
+            for (endpoint in endpointsToTry) {
+                try {
+                    val jsonPayload = JSONObject().apply {
+                        if (!callSid.isNullOrBlank()) {
+                            put("callSid", callSid)
+                            put("sid", callSid)
+                            put("CallSid", callSid)
+                            put("call_sid", callSid)
+                        }
+                        if (!toPhoneNumber.isNullOrBlank()) {
+                            put("toPhoneNumber", toPhoneNumber)
+                            put("phoneNumber", toPhoneNumber)
+                        }
+                        put("status", "completed")
+                        put("action", "hangup")
+                    }
+
+                    val requestBody = jsonPayload.toString()
+                        .toRequestBody("application/json; charset=utf-8".toMediaType())
+
+                    val request = Request.Builder()
+                        .url("$targetUrl$endpoint")
+                        .post(requestBody)
+                        .build()
+
+                    client.newCall(request).execute().use { response ->
+                        val responseBodyStr = response.body?.string()
+                        android.util.Log.d("CallService", "endCall endpoint $endpoint response code=${response.code}, body=$responseBodyStr")
+                        if (response.isSuccessful) {
+                            return@withContext TwilioCallResult(success = true, callSid = callSid)
+                        } else {
+                            lastError = "HTTP ${response.code}: ${response.message}"
+                        }
+                    }
+                } catch (e: Exception) {
+                    lastError = e.localizedMessage ?: "Network error occurred"
+                    android.util.Log.e("CallService", "endCall exception on $endpoint: ${e.message}")
+                }
             }
         }
         TwilioCallResult(

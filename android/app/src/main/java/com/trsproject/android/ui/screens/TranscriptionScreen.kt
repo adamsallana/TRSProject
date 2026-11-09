@@ -46,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.trsproject.android.network.CallService
 import com.trsproject.android.ui.theme.TRSProjectTheme
+import kotlinx.coroutines.launch
 
 // Data model for a caption line
 data class CaptionMessage(
@@ -86,6 +88,48 @@ fun TranscriptionScreen(
     val displayName = contactName ?: "Contact"
     val phoneNumber = contactPhoneNumber ?: "+17818690609"
     val callService = remember { CallService() }
+    val coroutineScope = rememberCoroutineScope()
+
+    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
+    val listState = rememberLazyListState()
+    var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
+
+    fun handleEndCall() {
+        val activeCallSid = callSid
+        val activePhoneNumber = phoneNumber
+
+        android.util.Log.d("TranscriptionScreen", "handleEndCall triggered. callSid=$activeCallSid, phone=$activePhoneNumber")
+
+        try {
+            val hangupMessage = org.json.JSONObject().apply {
+                put("event", "end_call")
+                put("action", "hangup")
+                put("type", "hangup")
+                put("text", "END_CALL")
+                if (!activeCallSid.isNullOrBlank()) {
+                    put("callSid", activeCallSid)
+                    put("sid", activeCallSid)
+                }
+                if (activePhoneNumber.isNotBlank()) {
+                    put("toPhoneNumber", activePhoneNumber)
+                }
+            }.toString()
+            webSocket?.send(hangupMessage)
+        } catch (e: Exception) {
+            // Ignore if websocket already closed
+        }
+
+        webSocket?.close(1000, "User ended call")
+        webSocket = null
+
+        coroutineScope.launch {
+            callService.endCall(callSid = activeCallSid, toPhoneNumber = activePhoneNumber)
+        }
+
+        twilioStatus = "Call Ended"
+        onCall = false
+        onBack()
+    }
 
     // Initiate Twilio call via backend when screen is loaded
     LaunchedEffect(phoneNumber) {
@@ -93,15 +137,13 @@ fun TranscriptionScreen(
         val result = callService.makeCall(toPhoneNumber = phoneNumber)
         if (result.success) {
             callSid = result.callSid
+            android.util.Log.d("TranscriptionScreen", "makeCall success! callSid=${result.callSid}")
             twilioStatus = "Twilio Call Active (SID: ${result.callSid})"
         } else {
+            android.util.Log.e("TranscriptionScreen", "makeCall failed: ${result.errorMessage}")
             twilioStatus = "Twilio Status: ${result.errorMessage ?: "Disconnected"}"
         }
     }
-
-    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
-    val listState = rememberLazyListState()
-    var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
 
     val context = LocalContext.current
     var hasMicPermission by remember {
@@ -433,7 +475,7 @@ fun TranscriptionScreen(
 
                 // 3. End Call Button (Red Circle)
                 IconButton(
-                    onClick = { onCall = false },
+                    onClick = { handleEndCall() },
                     modifier = Modifier
                         .size(56.dp)
                         .background(Color.Red, shape = CircleShape)

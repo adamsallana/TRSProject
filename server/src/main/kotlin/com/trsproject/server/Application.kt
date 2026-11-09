@@ -50,6 +50,20 @@ data class MakeCallResponse(
 )
 
 @Serializable
+data class EndCallRequest(
+    val callSid: String? = null,
+    val sid: String? = null,
+    val call_sid: String? = null,
+    val toPhoneNumber: String? = null
+)
+
+@Serializable
+data class EndCallResponse(
+    val status: String,
+    val error: String? = null
+)
+
+@Serializable
 data class TranscriptMessage(
     val id: Int,
     val senderName: String,
@@ -267,6 +281,66 @@ fun Application.module() {
                     MakeCallResponse(
                         status = "error",
                         error = "Failed to initiate call via Twilio: ${e.message}"
+                    )
+                )
+            }
+        }
+
+        // Endpoint to end an active call via Twilio REST API
+        post("/api/end-call") {
+            val request = try {
+                call.receive<EndCallRequest>()
+            } catch (e: Exception) {
+                EndCallRequest()
+            }
+
+            val targetCallSid = request.callSid
+                ?: request.sid
+                ?: request.call_sid
+                ?: call.request.queryParameters["callSid"]
+
+            val currentAccountSid = System.getenv("TWILIO_ACCOUNT_SID")
+            val currentAuthToken = System.getenv("TWILIO_AUTH_TOKEN")
+
+            if (currentAccountSid.isNullOrBlank() || currentAuthToken.isNullOrBlank()) {
+                println(">>> [SERVER] END CALL FAILED: Twilio credentials not configured")
+                call.respond(
+                    EndCallResponse(
+                        status = "error",
+                        error = "Twilio credentials (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) are not configured on the server."
+                    )
+                )
+                return@post
+            }
+
+            if (targetCallSid.isNullOrBlank()) {
+                println(">>> [SERVER] END CALL WARNING: No callSid provided in request")
+                call.respond(
+                    EndCallResponse(
+                        status = "error",
+                        error = "No callSid provided to end call."
+                    )
+                )
+                return@post
+            }
+
+            try {
+                Twilio.init(currentAccountSid, currentAuthToken)
+
+                val updatedCall = Call.updater(targetCallSid).setStatus(Call.UpdateStatus.COMPLETED).update()
+                println(">>> [SERVER] CALL ENDED SUCCESSFULLY via Twilio REST API: sid=${updatedCall.sid}, status=${updatedCall.status}")
+
+                call.respond(
+                    EndCallResponse(
+                        status = "success"
+                    )
+                )
+            } catch (e: Exception) {
+                println(">>> [SERVER] FAILED TO END CALL VIA TWILIO: ${e.message}")
+                call.respond(
+                    EndCallResponse(
+                        status = "error",
+                        error = "Failed to end call via Twilio: ${e.message}"
                     )
                 )
             }
