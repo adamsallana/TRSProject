@@ -125,46 +125,69 @@ fun TranscriptionScreen(
         }
     }
 
-    // Android SpeechRecognizer for continuous caller speech transcription
+    var micStatusText by remember { mutableStateOf("Mic: Active (Listening...)") }
+
+    // Continuous SpeechRecognizer for caller speech transcription
     DisposableEffect(onCall, isMuted, hasMicPermission) {
         if (!onCall || isMuted || !hasMicPermission || !SpeechRecognizer.isRecognitionAvailable(context)) {
+            micStatusText = if (isMuted) "Mic: Muted" else "Mic: Disabled"
             return@DisposableEffect onDispose {}
         }
 
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
 
-        val listener = object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                android.util.Log.d("SpeechRecognizer", "Ready for speech")
-            }
-            override fun onBeginningOfSpeech() {
-                android.util.Log.d("SpeechRecognizer", "Beginning of speech detected")
-            }
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                android.util.Log.d("SpeechRecognizer", "End of speech detected")
-            }
-            override fun onError(error: Int) {
-                android.util.Log.e("SpeechRecognizer", "Speech error code: $error")
+        fun keepListening(delayMs: Long = 100L) {
+            if (!onCall || isMuted) return
+            handler.removeCallbacksAndMessages(null)
+            handler.postDelayed({
                 if (onCall && !isMuted) {
                     try {
                         speechRecognizer.cancel()
                         speechRecognizer.startListening(intent)
                     } catch (e: Exception) {
-                        android.util.Log.e("SpeechRecognizer", "Failed to restart: ${e.message}")
+                        android.util.Log.e("SpeechRecognizer", "Error restarting: ${e.message}")
                     }
                 }
+            }, delayMs)
+        }
+
+        val listener = object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                android.util.Log.d("SpeechRecognizer", "Ready for speech")
+                micStatusText = "Mic: Active (Listening...)"
+            }
+
+            override fun onBeginningOfSpeech() {
+                android.util.Log.d("SpeechRecognizer", "Beginning of speech")
+                micStatusText = "Mic: Hearing speech..."
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+
+            override fun onEndOfSpeech() {
+                android.util.Log.d("SpeechRecognizer", "End of speech")
+                micStatusText = "Mic: Processing..."
+            }
+
+            override fun onError(error: Int) {
+                android.util.Log.e("SpeechRecognizer", "Speech error code: $error")
+                micStatusText = "Mic: Active (Listening...)"
+                keepListening(150L)
             }
 
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val spokenText = matches?.firstOrNull()
-                android.util.Log.d("SpeechRecognizer", "Speech recognized on results: $spokenText")
+                android.util.Log.d("SpeechRecognizer", "Recognized text: $spokenText")
+
                 if (!spokenText.isNullOrBlank()) {
                     val msgId = System.currentTimeMillis().toInt()
                     val myMessage = CaptionMessage(
@@ -183,12 +206,9 @@ fun TranscriptionScreen(
                     }.toString()
                     webSocket?.send(jsonPayload)
                 }
-                if (onCall && !isMuted) {
-                    try {
-                        speechRecognizer.cancel()
-                        speechRecognizer.startListening(intent)
-                    } catch (e: Exception) {}
-                }
+
+                micStatusText = "Mic: Active (Listening...)"
+                keepListening(100L)
             }
 
             override fun onPartialResults(partialResults: Bundle?) {
@@ -196,19 +216,27 @@ fun TranscriptionScreen(
                 val partialText = matches?.firstOrNull()
                 if (!partialText.isNullOrBlank()) {
                     android.util.Log.d("SpeechRecognizer", "Partial speech: $partialText")
+                    micStatusText = "Mic: \"$partialText\""
                 }
             }
+
             override fun onEvent(eventType: Int, params: Bundle?) {}
         }
 
         speechRecognizer.setRecognitionListener(listener)
         try {
             speechRecognizer.startListening(intent)
-        } catch (e: Exception) {}
+            micStatusText = "Mic: Active (Listening...)"
+        } catch (e: Exception) {
+            android.util.Log.e("SpeechRecognizer", "Initial startListening error: ${e.message}")
+            micStatusText = "Mic Error: Failed to start"
+        }
 
         onDispose {
+            handler.removeCallbacksAndMessages(null)
             try {
                 speechRecognizer.stopListening()
+                speechRecognizer.cancel()
                 speechRecognizer.destroy()
             } catch (e: Exception) {}
         }
@@ -260,6 +288,16 @@ fun TranscriptionScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        if (onCall) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = if (isMuted) "Mic: Muted" else micStatusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isMuted) Color.Red else MaterialTheme.colorScheme.secondary,
+                fontWeight = FontWeight.Medium
+            )
+        }
 
         if (onCall && twilioStatus != null) {
             Spacer(modifier = Modifier.height(4.dp))
