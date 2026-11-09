@@ -63,9 +63,6 @@ fun SecuritySettingsScreen(
     var currentPassword by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
-
-    var pinLockEnabled by remember { mutableStateOf(initialPreferences.pinLockEnabled) }
-    var optionalPin by remember { mutableStateOf(initialPreferences.optionalPin) }
     var isSaving by remember { mutableStateOf(false) }
 
 
@@ -205,46 +202,6 @@ fun SecuritySettingsScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth()
             )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Optional App Access Security",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "Enable App PIN Lock", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                            Text(text = "Require a 4-digit PIN when opening the app", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = pinLockEnabled, onCheckedChange = { pinLockEnabled = it })
-                    }
-
-                    if (pinLockEnabled) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedTextField(
-                            value = optionalPin,
-                            onValueChange = { if (it.length <= 4) optionalPin = it },
-                            label = { Text("4-Digit PIN") },
-                            leadingIcon = { Icon(Icons.Default.Pin, contentDescription = null) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
 
             Spacer(modifier = Modifier.height(16.dp))
 

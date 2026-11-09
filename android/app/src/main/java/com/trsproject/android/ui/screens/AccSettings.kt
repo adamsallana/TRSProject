@@ -218,7 +218,7 @@ fun AccountScreen(
                     SettingsItem(
                         icon = Icons.Default.Lock,
                         title = "Security & Privacy",
-                        subtitle = "Change password and PIN options",
+                        subtitle = "Reset password",
                         onClick = onNavigateToSecurity
                     )
                 }

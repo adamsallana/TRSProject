@@ -55,14 +55,11 @@ fun NotificationsScreen(
     val scrollState = rememberScrollState()
 
     var callAlerts by remember { mutableStateOf(initialPreferences.callAlertsEnabled) }
-    var transcriptSummaries by remember { mutableStateOf(initialPreferences.transcriptSummariesEnabled) }
     var soundVibration by remember { mutableStateOf(initialPreferences.soundVibrationEnabled) }
-    var emailNotifications by remember { mutableStateOf(initialPreferences.emailNotificationsEnabled) }
     var isSaving by remember { mutableStateOf(false) }
 
     var isLoading by remember { mutableStateOf(true) }
     var loadFailed by remember { mutableStateOf(false) }
-
 
     LaunchedEffect(Unit) {
         try {
@@ -81,9 +78,7 @@ fun NotificationsScreen(
             val prefs = SupabaseService.fetchNotificationPreferences(user.id)
 
             callAlerts = prefs.callAlertsEnabled
-            transcriptSummaries = prefs.transcriptSummariesEnabled
             soundVibration = prefs.soundVibrationEnabled
-            emailNotifications = prefs.emailNotificationsEnabled
 
         } catch (e: Exception) {
             loadFailed = true
@@ -96,8 +91,6 @@ fun NotificationsScreen(
             isLoading = false
         }
     }
-
-
 
     fun savePreferences() {
         if (isSaving || isLoading || loadFailed) return
@@ -120,9 +113,9 @@ fun NotificationsScreen(
                 val updated = NotificationPreferences(
                     userId = userId,
                     callAlertsEnabled = callAlerts,
-                    transcriptSummariesEnabled = transcriptSummaries,
+                    transcriptSummariesEnabled = initialPreferences.transcriptSummariesEnabled,
                     soundVibrationEnabled = soundVibration,
-                    emailNotificationsEnabled = emailNotifications
+                    emailNotificationsEnabled = initialPreferences.emailNotificationsEnabled
                 )
 
                 val success = SupabaseService.updateNotificationPreferences(updated)
@@ -153,7 +146,6 @@ fun NotificationsScreen(
         }
     }
 
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -176,7 +168,7 @@ fun NotificationsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Call & Summary Preferences",
+                text = "Call Alert Preferences",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -206,38 +198,10 @@ fun NotificationsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "Transcript Summaries", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                            Text(text = "Receive notifications when call transcripts are generated", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = transcriptSummaries, onCheckedChange = { transcriptSummaries = it })
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
                             Text(text = "Sound & Vibration", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                             Text(text = "Play sound and haptic vibration on alerts", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = soundVibration, onCheckedChange = { soundVibration = it })
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "Email Notifications", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                            Text(text = "Send call summaries and system updates via email", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = emailNotifications, onCheckedChange = { emailNotifications = it })
                     }
                 }
             }
