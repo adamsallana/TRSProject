@@ -33,6 +33,8 @@ import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
 import com.trsproject.android.data.remote.SupabaseService
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 @Composable
 fun AuthScreen(
@@ -80,6 +82,9 @@ fun AuthScreen(
                     SupabaseService.client.auth.signUpWith(Email) {
                         this.email = email.trim()
                         this.password = password
+                        this.data = buildJsonObject {
+                            put("full_name", name.trim())
+                        }
                     }
 
                     Toast.makeText(
