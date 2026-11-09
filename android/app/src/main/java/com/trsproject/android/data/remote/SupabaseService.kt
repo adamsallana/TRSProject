@@ -281,4 +281,43 @@ object SupabaseService {
                 false
             }
         }
+
+    suspend fun updateContact(contact: Contact): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (!BuildConfig.SUPABASE_URL.isBlank()) {
+                    client.postgrest["contacts"].upsert(contact)
+                }
+                val currentList = cachedContacts.orEmpty().toMutableList()
+                val index = currentList.indexOfFirst { it.id == contact.id }
+                if (index >= 0) {
+                    currentList[index] = contact
+                    cachedContacts = currentList
+                }
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to update contact", e)
+                false
+            }
+        }
+
+    suspend fun deleteContact(contactId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (!BuildConfig.SUPABASE_URL.isBlank()) {
+                    client.postgrest["contacts"].delete {
+                        filter {
+                            eq("id", contactId)
+                        }
+                    }
+                }
+                val currentList = cachedContacts.orEmpty().toMutableList()
+                currentList.removeAll { it.id == contactId }
+                cachedContacts = currentList
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to delete contact", e)
+                false
+            }
+        }
 }
