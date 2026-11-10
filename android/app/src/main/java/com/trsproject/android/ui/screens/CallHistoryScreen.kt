@@ -55,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.trsproject.android.data.model.CallLog
+import com.trsproject.android.data.model.Contact
 import com.trsproject.android.data.remote.SupabaseService
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import io.github.jan.supabase.auth.auth
@@ -93,6 +94,11 @@ fun CallHistoryScreen(
             if (forceRefresh) isRefreshing = true else isLoading = true
             try {
                 val userId = SupabaseService.client.auth.currentUserOrNull()?.id ?: "user_default"
+                val contacts = try {
+                    SupabaseService.fetchContacts(userId, forceRefresh = forceRefresh)
+                } catch (e: Exception) {
+                    emptyList<com.trsproject.android.data.model.Contact>()
+                }
                 val supabaseLogs = SupabaseService.fetchCallLogs(userId, forceRefresh = forceRefresh)
                 val serverLogs = try {
                     callService.fetchCallLogsFromServer()
@@ -102,6 +108,13 @@ fun CallHistoryScreen(
 
                 val merged = (supabaseLogs + serverLogs)
                     .distinctBy { log -> log.callSid?.takeIf { it.isNotBlank() } ?: log.id }
+                    .map { log ->
+                        val matchedContact = contacts.firstOrNull { contact ->
+                            com.trsproject.android.network.phoneNumbersMatch(contact.phoneNumber, log.phoneNumber)
+                        }
+                        val resolvedName = matchedContact?.name?.takeIf { it.isNotBlank() } ?: log.contactName
+                        log.copy(contactName = resolvedName)
+                    }
                     .sortedByDescending { it.startedAt ?: "" }
 
                 callLogList.clear()
