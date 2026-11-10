@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,6 +72,20 @@ private suspend fun lookupContactName(number: String): String? {
     }
 }
 
+/**
+ * The signed-in user's TRS relay number (their own Twilio number), or null if they haven't set one
+ * or it can't be loaded. Null makes the app use the server's shared default number.
+ */
+private suspend fun loadLineNumber(): String? {
+    return try {
+        val userId = SupabaseService.client.auth.currentUserOrNull()?.id ?: return null
+        SupabaseService.fetchUserProfile(userId).trsRelayNumber?.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+        android.util.Log.w("MainApp", "Couldn't load TRS relay number: ${e.message}")
+        null
+    }
+}
+
 private val SIGNED_OUT_SCREENS = setOf(Screen.AUTH, Screen.ERROR)
 private val IN_CALL_SCREENS = setOf(Screen.OUTGOING_CALL, Screen.INCOMING_CALL, Screen.TRANSCRIPTION)
 
@@ -93,10 +108,28 @@ fun MainApp() {
         currentScreen = Screen.HOME
     }
 
+    // The user's own Twilio number decides which calls the server sends this app. Reloaded on
+    // sign-in and after the user leaves Personal Info (where they can change it).
+    var lineNumber by remember { mutableStateOf<String?>(null) }
+    var lineLoaded by remember { mutableStateOf(false) }
+    var profileVersion by remember { mutableIntStateOf(0) }
+    LaunchedEffect(isSignedIn, profileVersion) {
+        if (!isSignedIn) {
+            CallService.lineNumber = null
+            lineNumber = null
+            lineLoaded = false
+            return@LaunchedEffect
+        }
+        val number = loadLineNumber()
+        CallService.lineNumber = number
+        lineNumber = number
+        lineLoaded = true
+    }
+
     // One app-wide socket for call events while signed in, so incoming calls ring on any screen.
-    // Reconnects after a short delay if the connection drops.
-    LaunchedEffect(isSignedIn) {
-        if (!isSignedIn) return@LaunchedEffect
+    // Reconnects after a short delay if the connection drops, or when the user's number changes.
+    LaunchedEffect(isSignedIn, lineLoaded, lineNumber) {
+        if (!isSignedIn || !lineLoaded) return@LaunchedEffect
         callService.callEvents()
             .retryWhen { cause, _ ->
                 android.util.Log.w("MainApp", "Call event socket dropped, reconnecting: ${cause.message}")
@@ -109,8 +142,8 @@ fun MainApp() {
                     val busy = currentScreen in IN_CALL_SCREENS && !activeCallEnded
                     if (busy) {
                         // Already on a live call: ignore the new one. Don't decline it: the server
-                        // broadcasts calls to every connected app, so declining here would hang up
-                        // on a call another device may want to answer. Unanswered, it times out.
+                        // sends calls to every app signed in on this number, so declining here would
+                        // hang up on a call another device may want to answer. Unanswered, it times out.
                         android.util.Log.d("MainApp", "Busy; ignoring incoming call ${event.callSid}")
                     } else {
                         activeCallEnded = false
@@ -265,7 +298,10 @@ fun MainApp() {
             )
             Screen.PERSONAL_INFO -> PersonalInfoScreen(
                 modifier = Modifier.padding(innerPadding),
-                onBack = { currentScreen = Screen.ACCOUNT }
+                onBack = {
+                    profileVersion++ // pick up a changed TRS relay number
+                    currentScreen = Screen.ACCOUNT
+                }
             )
             Screen.CAPTION_SETTINGS -> CaptionSettingsScreen(
                 modifier = Modifier.padding(innerPadding),
