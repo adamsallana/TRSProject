@@ -3,6 +3,7 @@ package com.trsproject.android.ui.navigation
 enum class Screen {
     AUTH,
     HOME,
+    KEYPAD,
     OUTGOING_CALL,
     INCOMING_CALL,
     TRANSCRIPTION,

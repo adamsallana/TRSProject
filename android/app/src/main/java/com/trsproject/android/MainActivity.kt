@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -40,6 +41,7 @@ import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
 import com.trsproject.android.ui.screens.CallHistoryScreen
 import com.trsproject.android.ui.screens.CaptionSettingsScreen
+import com.trsproject.android.ui.screens.DialerScreen
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.IncomingCallScreen
@@ -234,7 +236,7 @@ fun MainApp() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
-            if (currentScreen in setOf(Screen.HOME, Screen.CALL_HISTORY, Screen.ACCOUNT)) {
+            if (currentScreen in setOf(Screen.HOME, Screen.KEYPAD, Screen.CALL_HISTORY, Screen.ACCOUNT)) {
                 NavigationBar {
                     NavigationBarItem(
                         selected = currentScreen == Screen.HOME,
@@ -247,6 +249,12 @@ fun MainApp() {
                         onClick = { currentScreen = Screen.CALL_HISTORY },
                         icon = { Icon(Icons.Default.History, contentDescription = "History") },
                         label = { Text("History") }
+                    )
+                    NavigationBarItem(
+                        selected = currentScreen == Screen.KEYPAD,
+                        onClick = { currentScreen = Screen.KEYPAD },
+                        icon = { Icon(Icons.Default.Dialpad, contentDescription = "Keypad") },
+                        label = { Text("Keypad") }
                     )
                     NavigationBarItem(
                         selected = currentScreen == Screen.ACCOUNT,
@@ -319,6 +327,49 @@ fun MainApp() {
                 onSignOut = {
                     SupabaseService.clearCache()
                     currentScreen = Screen.AUTH
+                }
+            )
+
+            Screen.KEYPAD -> DialerScreen(
+                modifier = Modifier.padding(innerPadding),
+                onCallClick = { formattedNumber, matchedContactName ->
+                    appScope.launch {
+                        val user = try { SupabaseService.client.auth.currentUserOrNull() } catch (e: Exception) { null }
+                        val profile = user?.let { try { SupabaseService.fetchUserProfile(it.id) } catch (e: Exception) { null } }
+
+                        val userRelayNumber: String? = profile?.trsRelayNumber?.takeIf { it.isNotBlank() }
+                            ?: profile?.phoneNumber?.takeIf { it.isNotBlank() }
+
+                        if (userRelayNumber.isNullOrBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: No phone number configured for your account. Please set up your phone numbers in Account Settings.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            currentScreen = Screen.PERSONAL_INFO
+                            return@launch
+                        }
+
+                        if (formattedNumber.isBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: Please enter a phone number.",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return@launch
+                        }
+
+                        activeCallEnded = false
+                        currentCallLogged = false
+                        callStartTimeMs = System.currentTimeMillis()
+                        activeCall = ActiveCall(
+                            direction = CallDirection.OUTGOING,
+                            name = matchedContactName?.ifBlank { null } ?: formattedNumber,
+                            phoneNumber = formattedNumber,
+                            userRelayNumber = userRelayNumber
+                        )
+                        currentScreen = Screen.OUTGOING_CALL
+                    }
                 }
             )
 
