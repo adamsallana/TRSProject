@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.trsproject.android.data.model.ActiveCall
 import com.trsproject.android.data.model.CallDirection
+import com.trsproject.android.data.model.CallLog
 import com.trsproject.android.data.model.UserProfile
 import com.trsproject.android.data.remote.SupabaseService
 import io.github.jan.supabase.auth.auth
@@ -29,6 +30,7 @@ import com.trsproject.android.network.phoneNumbersMatch
 import com.trsproject.android.ui.navigation.Screen
 import com.trsproject.android.ui.screens.AccountScreen
 import com.trsproject.android.ui.screens.AuthScreen
+import com.trsproject.android.ui.screens.CallHistoryScreen
 import com.trsproject.android.ui.screens.CaptionSettingsScreen
 import com.trsproject.android.ui.screens.ErrorScreen
 import com.trsproject.android.ui.screens.HomeScreen
@@ -97,13 +99,61 @@ fun MainApp() {
     // True once the call on the transcription screen has ended (its "Call Ended" view is showing)
     var activeCallEnded by remember { mutableStateOf(false) }
 
+    var callStartTimeMs by remember { mutableStateOf<Long?>(null) }
+    var currentCallLogged by remember { mutableStateOf(false) }
+
     val callService = remember { CallService() }
     val appScope = rememberCoroutineScope()
     // Call events from the server, re-emitted to whichever call screen is showing
     val callEvents = remember { MutableSharedFlow<CallEvent>(extraBufferCapacity = 32) }
     val isSignedIn = currentScreen !in SIGNED_OUT_SCREENS
 
-    fun endCallAndGoHome() {
+    fun saveCallLog(
+        direction: String,
+        phoneNumber: String,
+        name: String?,
+        sid: String?,
+        durationSec: Int,
+        status: String
+    ) {
+        if (currentCallLogged) return
+        currentCallLogged = true
+        appScope.launch {
+            try {
+                val userId = SupabaseService.client.auth.currentUserOrNull()?.id ?: "user_default"
+                val nowStr = java.time.Instant.now().toString()
+                val log = CallLog(
+                    id = java.util.UUID.randomUUID().toString(),
+                    userId = userId,
+                    callSid = sid,
+                    contactName = name,
+                    phoneNumber = phoneNumber,
+                    direction = direction,
+                    status = status,
+                    durationSeconds = durationSec,
+                    startedAt = nowStr
+                )
+                SupabaseService.addCallLog(log)
+            } catch (e: Exception) {
+                android.util.Log.e("MainApp", "Failed to save call log: ${e.message}")
+            }
+        }
+    }
+
+    fun endCallAndGoHome(statusIfUnsaved: String = "COMPLETED") {
+        val call = activeCall
+        if (call != null && !currentCallLogged) {
+            val durationSec = callStartTimeMs?.let { ((System.currentTimeMillis() - it) / 1000).toInt() } ?: 0
+            val dir = if (call.direction == CallDirection.INCOMING) "INCOMING" else "OUTGOING"
+            saveCallLog(
+                direction = dir,
+                phoneNumber = call.phoneNumber,
+                name = call.name,
+                sid = call.callSid,
+                durationSec = durationSec,
+                status = statusIfUnsaved
+            )
+        }
         activeCall = null
         currentScreen = Screen.HOME
     }
@@ -147,6 +197,8 @@ fun MainApp() {
                         android.util.Log.d("MainApp", "Busy; ignoring incoming call ${event.callSid}")
                     } else {
                         activeCallEnded = false
+                        currentCallLogged = false
+                        callStartTimeMs = System.currentTimeMillis()
                         val number = event.phoneNumber.orEmpty()
                         activeCall = ActiveCall(
                             direction = CallDirection.INCOMING,
@@ -186,8 +238,8 @@ fun MainApp() {
                         val user = try { SupabaseService.client.auth.currentUserOrNull() } catch (e: Exception) { null }
                         val profile = user?.let { try { SupabaseService.fetchUserProfile(it.id) } catch (e: Exception) { null } }
 
-                        val userRelayNumber = profile?.trsRelayNumber?.ifBlank { null }
-                            ?: profile?.phoneNumber?.ifBlank { null }
+                        val userRelayNumber: String? = profile?.trsRelayNumber?.takeIf { it.isNotBlank() }
+                            ?: profile?.phoneNumber?.takeIf { it.isNotBlank() }
 
                         if (userRelayNumber.isNullOrBlank()) {
                             android.widget.Toast.makeText(
@@ -210,6 +262,8 @@ fun MainApp() {
                         }
 
                         activeCallEnded = false
+                        currentCallLogged = false
+                        callStartTimeMs = System.currentTimeMillis()
                         activeCall = ActiveCall(
                             direction = CallDirection.OUTGOING,
                             name = contact.name?.ifBlank { null } ?: number,
@@ -218,6 +272,9 @@ fun MainApp() {
                         )
                         currentScreen = Screen.OUTGOING_CALL
                     }
+                },
+                onHistoryClick = {
+                    currentScreen = Screen.CALL_HISTORY
                 },
                 onAccountClick = {
                     currentScreen = Screen.ACCOUNT
@@ -267,8 +324,11 @@ fun MainApp() {
                             callEvents = callEvents,
                             callService = callService,
                             modifier = Modifier.padding(innerPadding),
-                            onAccepted = { currentScreen = Screen.TRANSCRIPTION },
-                            onFinished = { endCallAndGoHome() }
+                            onAccepted = {
+                                callStartTimeMs = System.currentTimeMillis()
+                                currentScreen = Screen.TRANSCRIPTION
+                            },
+                            onFinished = { endCallAndGoHome(statusIfUnsaved = "DECLINED") }
                         )
                     }
                 }
@@ -284,6 +344,51 @@ fun MainApp() {
                 onBack = { endCallAndGoHome() }
             )
 
+            Screen.CALL_HISTORY -> CallHistoryScreen(
+                modifier = Modifier.padding(innerPadding),
+                callService = callService,
+                onBack = { currentScreen = Screen.HOME },
+                onCallClick = { phone, name ->
+                    appScope.launch {
+                        val user = try { SupabaseService.client.auth.currentUserOrNull() } catch (e: Exception) { null }
+                        val profile = user?.let { try { SupabaseService.fetchUserProfile(it.id) } catch (e: Exception) { null } }
+
+                        val userRelayNumber: String? = profile?.trsRelayNumber?.takeIf { it.isNotBlank() }
+                            ?: profile?.phoneNumber?.takeIf { it.isNotBlank() }
+
+                        if (userRelayNumber.isNullOrBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: No phone number configured for your account. Please set up your phone numbers in Account Settings.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            currentScreen = Screen.PERSONAL_INFO
+                            return@launch
+                        }
+
+                        if (phone.isBlank()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Error: Contact has no valid phone number.",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return@launch
+                        }
+
+                        activeCallEnded = false
+                        currentCallLogged = false
+                        callStartTimeMs = System.currentTimeMillis()
+                        activeCall = ActiveCall(
+                            direction = CallDirection.OUTGOING,
+                            name = name?.ifBlank { null } ?: phone,
+                            phoneNumber = phone,
+                            userRelayNumber = userRelayNumber
+                        )
+                        currentScreen = Screen.OUTGOING_CALL
+                    }
+                }
+            )
+
             Screen.ACCOUNT -> AccountScreen(
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.HOME },
@@ -294,7 +399,8 @@ fun MainApp() {
                 onNavigateToPersonalInfo = { currentScreen = Screen.PERSONAL_INFO },
                 onNavigateToCaptionSettings = { currentScreen = Screen.CAPTION_SETTINGS },
                 onNavigateToNotifications = { currentScreen = Screen.NOTIFICATIONS },
-                onNavigateToSecurity = { currentScreen = Screen.SECURITY_SETTINGS }
+                onNavigateToSecurity = { currentScreen = Screen.SECURITY_SETTINGS },
+                onNavigateToCallHistory = { currentScreen = Screen.CALL_HISTORY }
             )
             Screen.PERSONAL_INFO -> PersonalInfoScreen(
                 modifier = Modifier.padding(innerPadding),

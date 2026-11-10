@@ -1,6 +1,7 @@
 package com.trsproject.android.data.remote
 
 import com.trsproject.android.BuildConfig
+import com.trsproject.android.data.model.CallLog
 import com.trsproject.android.data.model.CaptionPreferences
 import com.trsproject.android.data.model.Contact
 import com.trsproject.android.data.model.NotificationPreferences
@@ -49,11 +50,17 @@ object SupabaseService {
     @Volatile
     private var cachedContacts: List<Contact>? = null
 
+    @Volatile
+    private var cachedCallLogs: List<CallLog>? = null
+
     /** Returns true if contacts are currently stored in memory cache. */
     fun hasCachedContacts(): Boolean = cachedContacts != null
 
     /** Returns true if user profile is currently stored in memory cache. */
     fun hasCachedUserProfile(): Boolean = cachedUserProfile != null
+
+    /** Returns true if call logs are currently stored in memory cache. */
+    fun hasCachedCallLogs(): Boolean = cachedCallLogs != null
 
     /** Clears all in-memory cached data (e.g. on user sign out). */
     fun clearCache() {
@@ -62,6 +69,7 @@ object SupabaseService {
         cachedNotificationPreferences = null
         cachedSecurityPreferences = null
         cachedContacts = null
+        cachedCallLogs = null
     }
 
     // --- User Profile Operations ---
@@ -317,6 +325,91 @@ object SupabaseService {
                 true
             } catch (e: Exception) {
                 Log.e("SupabaseService", "Failed to delete contact", e)
+                false
+            }
+        }
+
+    // --- Call Log Operations ---
+
+    suspend fun fetchCallLogs(userId: String, forceRefresh: Boolean = false): List<CallLog> =
+        withContext(Dispatchers.IO) {
+            val local = cachedCallLogs
+            if (!forceRefresh && local != null) {
+                return@withContext local
+            }
+            try {
+                if (BuildConfig.SUPABASE_URL.isBlank()) {
+                    val fallback = emptyList<CallLog>()
+                    cachedCallLogs = fallback
+                    return@withContext fallback
+                }
+                val list = client.postgrest["call_logs"]
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                        }
+                        order(column = "started_at", order = io.github.jan.supabase.postgrest.query.Order.DESCENDING)
+                    }
+                    .decodeList<CallLog>()
+
+                cachedCallLogs = list
+                list
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to fetch call logs", e)
+                cachedCallLogs ?: emptyList()
+            }
+        }
+
+    suspend fun addCallLog(log: CallLog): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (BuildConfig.SUPABASE_URL.isNotBlank()) {
+                    client.postgrest["call_logs"].insert(log)
+                }
+                val currentList = cachedCallLogs.orEmpty().toMutableList()
+                currentList.add(0, log)
+                cachedCallLogs = currentList
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to add call log", e)
+                false
+            }
+        }
+
+    suspend fun deleteCallLog(logId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (BuildConfig.SUPABASE_URL.isNotBlank()) {
+                    client.postgrest["call_logs"].delete {
+                        filter {
+                            eq("id", logId)
+                        }
+                    }
+                }
+                val currentList = cachedCallLogs.orEmpty().toMutableList()
+                currentList.removeAll { it.id == logId }
+                cachedCallLogs = currentList
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to delete call log", e)
+                false
+            }
+        }
+
+    suspend fun clearCallLogs(userId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (BuildConfig.SUPABASE_URL.isNotBlank()) {
+                    client.postgrest["call_logs"].delete {
+                        filter {
+                            eq("user_id", userId)
+                        }
+                    }
+                }
+                cachedCallLogs = emptyList()
+                true
+            } catch (e: Exception) {
+                Log.e("SupabaseService", "Failed to clear call logs", e)
                 false
             }
         }

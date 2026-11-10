@@ -217,6 +217,42 @@ class CallService(private val baseUrl: String = getHttpBaseUrl()) {
         false
     }
 
+    /** Fetches recent call logs directly from the backend server / Twilio API. */
+    suspend fun fetchCallLogsFromServer(): List<com.trsproject.android.data.model.CallLog> = withContext(Dispatchers.IO) {
+        val path = "/api/call-logs" + lineQuery("number").replaceFirst('&', '?')
+        for (targetUrl in candidateBaseUrls()) {
+            try {
+                val request = Request.Builder().url("$targetUrl$path").get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use
+                    val body = response.body?.string() ?: return@use
+                    val json = JSONObject(body)
+                    val array = json.optJSONArray("calls") ?: json.optJSONArray("data") ?: return@use
+                    val result = mutableListOf<com.trsproject.android.data.model.CallLog>()
+                    for (i in 0 until array.length()) {
+                        val obj = array.optJSONObject(i) ?: continue
+                        result.add(
+                            com.trsproject.android.data.model.CallLog(
+                                id = obj.optString("id").ifBlank { obj.optString("sid", java.util.UUID.randomUUID().toString()) },
+                                callSid = obj.optStringOrNull("callSid") ?: obj.optStringOrNull("sid"),
+                                contactName = obj.optStringOrNull("contactName") ?: obj.optStringOrNull("name"),
+                                phoneNumber = obj.optString("phoneNumber", obj.optString("to", obj.optString("from", ""))),
+                                direction = obj.optString("direction", "OUTGOING").uppercase(),
+                                status = obj.optString("status", "COMPLETED").uppercase(),
+                                durationSeconds = obj.optInt("durationSeconds", obj.optInt("duration", 0)),
+                                startedAt = obj.optStringOrNull("startedAt") ?: obj.optStringOrNull("dateCreated")
+                            )
+                        )
+                    }
+                    return@withContext result
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("CallService", "fetchCallLogsFromServer failed on $targetUrl: ${e.message}")
+            }
+        }
+        emptyList()
+    }
+
     private val wsBaseUrl: String
         get() = if (baseUrl.startsWith("https://")) {
             baseUrl.replace("https://", "wss://")

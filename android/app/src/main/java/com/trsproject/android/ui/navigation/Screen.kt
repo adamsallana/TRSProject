@@ -11,5 +11,6 @@ enum class Screen {
     CAPTION_SETTINGS,
     NOTIFICATIONS,
     SECURITY_SETTINGS,
+    CALL_HISTORY,
     ERROR
 }

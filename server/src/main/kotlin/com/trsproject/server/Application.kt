@@ -67,6 +67,25 @@ data class SimpleResponse(
     val error: String? = null
 )
 
+@Serializable
+data class CallLogItem(
+    val id: String,
+    val callSid: String,
+    val contactName: String? = null,
+    val phoneNumber: String,
+    val direction: String,
+    val status: String,
+    val durationSeconds: Int,
+    val startedAt: String? = null
+)
+
+@Serializable
+data class CallLogsResponse(
+    val status: String,
+    val calls: List<CallLogItem>,
+    val error: String? = null
+)
+
 /** A line of live captions. `type` lets clients tell captions apart from call events. */
 @Serializable
 data class TranscriptMessage(
@@ -720,6 +739,49 @@ fun Application.module() {
             } catch (e: Exception) {
                 println(">>> [SERVER] FAILED TO END CALL VIA TWILIO: ${e.message}")
                 call.respond(SimpleResponse(status = "error", error = "Failed to end call via Twilio: ${e.message}"))
+            }
+        }
+
+        // Endpoint to fetch recent call logs directly from Twilio REST API
+        get("/api/call-logs") {
+            if (!initTwilio()) {
+                call.respond(CallLogsResponse(status = "error", calls = emptyList(), error = MISSING_CREDENTIALS))
+                return@get
+            }
+
+            try {
+                val twilioCalls = Call.reader().limit(50).read()
+
+                val logs = twilioCalls.mapNotNull { twCall ->
+                    val sid = twCall.sid ?: return@mapNotNull null
+                    val dirString = twCall.direction?.toString()?.lowercase().orEmpty()
+                    val direction = if (dirString.contains("inbound")) "INCOMING" else "OUTGOING"
+                    val phone = if (direction == "INCOMING") twCall.from?.toString().orEmpty() else twCall.to?.toString().orEmpty()
+
+                    val twStatus = twCall.status?.toString()?.uppercase() ?: "COMPLETED"
+                    val status = when (twStatus) {
+                        "NO-ANSWER", "NO_ANSWER", "CANCELED" -> "MISSED"
+                        "BUSY", "FAILED" -> "MISSED"
+                        else -> twStatus
+                    }
+
+                    val durationSec = twCall.duration?.toIntOrNull() ?: 0
+
+                    CallLogItem(
+                        id = sid,
+                        callSid = sid,
+                        phoneNumber = phone,
+                        direction = direction,
+                        status = status,
+                        durationSeconds = durationSec,
+                        startedAt = twCall.dateCreated?.toString()
+                    )
+                }
+
+                call.respond(CallLogsResponse(status = "success", calls = logs))
+            } catch (e: Exception) {
+                println(">>> [SERVER] FAILED TO FETCH CALL LOGS FROM TWILIO: ${e.message}")
+                call.respond(CallLogsResponse(status = "error", calls = emptyList(), error = e.message))
             }
         }
     }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
@@ -67,7 +68,8 @@ fun AccountScreen(
     onNavigateToPersonalInfo: () -> Unit = {},
     onNavigateToCaptionSettings: () -> Unit = {},
     onNavigateToNotifications: () -> Unit = {},
-    onNavigateToSecurity: () -> Unit = {}
+    onNavigateToSecurity: () -> Unit = {},
+    onNavigateToCallHistory: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -246,6 +248,13 @@ fun AccountScreen(
                             title = "Security & Privacy",
                             subtitle = "Reset password",
                             onClick = onNavigateToSecurity
+                        )
+
+                        SettingsItem(
+                            icon = Icons.Default.History,
+                            title = "Call History",
+                            subtitle = "View and manage past incoming and outgoing calls",
+                            onClick = onNavigateToCallHistory
                         )
                     }
                 }

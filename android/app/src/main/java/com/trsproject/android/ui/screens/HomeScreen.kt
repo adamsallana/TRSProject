@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,6 +74,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     contacts: List<Contact> = sampleFavorites,
     onCallClick: (Contact) -> Unit = {},
+    onHistoryClick: () -> Unit = {},
     onAccountClick: () -> Unit = {},
     onTestIncomingCall: () -> Unit = {},
     onSignOut: () -> Unit = {}
@@ -358,6 +360,12 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("Home") },
                 actions = {
+                    IconButton(onClick = onHistoryClick) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = "Call History"
+                        )
+                    }
                     Surface(
                         modifier = Modifier
                             .padding(end = 12.dp)
