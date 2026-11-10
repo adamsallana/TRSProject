@@ -118,15 +118,7 @@ fun AccountScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Account Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                }
+                title = { Text("Account Settings") }
             )
         },
         modifier = modifier
@@ -248,13 +240,6 @@ fun AccountScreen(
                             title = "Security & Privacy",
                             subtitle = "Reset password",
                             onClick = onNavigateToSecurity
-                        )
-
-                        SettingsItem(
-                            icon = Icons.Default.History,
-                            title = "Call History",
-                            subtitle = "View and manage past incoming and outgoing calls",
-                            onClick = onNavigateToCallHistory
                         )
                     }
                 }

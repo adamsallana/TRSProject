@@ -358,33 +358,13 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Home") },
+                title = { Text("Contacts") },
                 actions = {
-                    IconButton(onClick = onHistoryClick) {
-                        Icon(
-                            imageVector = Icons.Default.History,
-                            contentDescription = "Call History"
+                    TextButton(onClick = { isEditMode = !isEditMode }) {
+                        Text(
+                            text = if (isEditMode) "Done" else "Edit",
+                            fontWeight = FontWeight.Bold
                         )
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .padding(end = 12.dp)
-                            .size(42.dp)
-                            .clickable { onAccountClick() },
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Text(
-                                text = userInitial,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
                     }
                 }
             )
@@ -423,30 +403,6 @@ fun HomeScreen(
                     .padding(innerPadding)
                     .padding(horizontal = 16.dp)
             ) {
-
-                // Header with Edit Toggle
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (isEditMode) "Editing Contacts" else "Contacts",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isEditMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
-
-                    TextButton(onClick = { isEditMode = !isEditMode }) {
-                        Text(
-                            text = if (isEditMode) "Done" else "Edit",
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
                 val displayList = if (contactList.isNotEmpty()) contactList else contacts
 
                 LazyColumn(

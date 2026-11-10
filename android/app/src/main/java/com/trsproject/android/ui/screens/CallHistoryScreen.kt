@@ -215,14 +215,6 @@ fun CallHistoryScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Call History") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                },
                 actions = {
                     IconButton(onClick = { loadCallLogs(forceRefresh = true) }, enabled = !isRefreshing) {
                         Icon(
