@@ -1,5 +1,6 @@
 package com.trsproject.android.ui.screens
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -332,6 +333,35 @@ fun CallLogItemRow(
     onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    var hasLocalTranscript by remember { mutableStateOf(false) }
+
+    LaunchedEffect(log.callSid) {
+        if (!log.callSid.isNullOrBlank()) {
+            val file = java.io.File(context.filesDir, "transcript_${log.callSid}.txt")
+            hasLocalTranscript = file.exists()
+        }
+    }
+
+    fun downloadTranscript() {
+        if (log.callSid.isNullOrBlank()) return
+        val sourceFile = java.io.File(context.filesDir, "transcript_${log.callSid}.txt")
+        if (!sourceFile.exists()) {
+            Toast.makeText(context, "No local transcript found for this call", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val transcriptText = sourceFile.readText()
+            val externalDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            externalDir.mkdirs()
+            val destFile = java.io.File(externalDir, "Call_Transcript_${log.callSid}.txt")
+            destFile.writeText(transcriptText)
+            Toast.makeText(context, "Transcript downloaded to:\n${destFile.absolutePath}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(context, "Failed to download transcript: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val isMissed = log.status.equals("MISSED", ignoreCase = true) || log.status.equals("DECLINED", ignoreCase = true)
     val isIncoming = log.direction.equals("INCOMING", ignoreCase = true)
 
@@ -442,6 +472,12 @@ fun CallLogItemRow(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (hasLocalTranscript) {
+                    TextButton(onClick = { downloadTranscript() }) {
+                        Text("Download")
+                    }
+                }
+
                 IconButton(onClick = onCallClick) {
                     Icon(
                         imageVector = Icons.Default.Call,

@@ -32,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
 import com.trsproject.android.data.remote.SupabaseService
+import com.trsproject.android.BuildConfig
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put

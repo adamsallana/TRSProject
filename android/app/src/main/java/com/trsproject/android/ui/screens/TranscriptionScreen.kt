@@ -1,7 +1,9 @@
 package com.trsproject.android.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -388,6 +391,20 @@ fun TranscriptionScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         if (!onCall) {
+            // Automatically save transcript locally when call ends
+            LaunchedEffect(Unit) {
+                if (visibleCaptions.isNotEmpty()) {
+                    try {
+                        val transcriptText = visibleCaptions.joinToString("\n") { "[${it.senderName}]: ${it.text}" }
+                        val sid = callSid ?: "local_${System.currentTimeMillis()}"
+                        val file = java.io.File(context.filesDir, "transcript_$sid.txt")
+                        file.writeText(transcriptText)
+                    } catch (e: Exception) {
+                        android.util.Log.e("TranscriptionScreen", "Failed to save local transcript", e)
+                    }
+                }
+            }
+
             // Screen shown when call ends
             Column(
                 modifier = Modifier
@@ -401,6 +418,12 @@ fun TranscriptionScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Transcript saved securely on your device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 endCallError?.let { error ->
                     Spacer(modifier = Modifier.height(16.dp))
                     StatusBanner(
@@ -409,10 +432,10 @@ fun TranscriptionScreen(
                         onAction = { callSid?.let { hangUp(it) } }
                     )
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(24.dp))
                 // Wait for the hang-up request to finish so leaving the screen doesn't cancel it
-                Button(onClick = onBack, enabled = !isEndingCall) {
-                    Text(if (isEndingCall) "Ending call…" else "Back to Home")
+                Button(onClick = onBack, enabled = !isEndingCall, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (isEndingCall) "Ending call…" else "Back to Call History / Home")
                 }
             }
         } else {
