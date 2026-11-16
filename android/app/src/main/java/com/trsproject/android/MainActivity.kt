@@ -50,6 +50,8 @@ import com.trsproject.android.ui.screens.OutgoingCallScreen
 import com.trsproject.android.ui.screens.PersonalInfoScreen
 import com.trsproject.android.ui.screens.SecuritySettingsScreen
 import com.trsproject.android.ui.screens.TranscriptionScreen
+import com.trsproject.android.ui.screens.TranscriptsListScreen
+import com.trsproject.android.ui.screens.TranscriptDetailScreen
 import com.trsproject.android.ui.theme.TRSProjectTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -108,6 +110,8 @@ fun MainApp() {
     var activeCall by remember { mutableStateOf<ActiveCall?>(null) }
     // True once the call on the transcription screen has ended (its "Call Ended" view is showing)
     var activeCallEnded by remember { mutableStateOf(false) }
+
+    var selectedTranscriptPath by remember { mutableStateOf<String?>(null) }
 
     var callStartTimeMs by remember { mutableStateOf<Long?>(null) }
     var currentCallLogged by remember { mutableStateOf(false) }
@@ -433,6 +437,7 @@ fun MainApp() {
                 modifier = Modifier.padding(innerPadding),
                 callService = callService,
                 onBack = { currentScreen = Screen.HOME },
+                onTranscriptsClick = { currentScreen = Screen.TRANSCRIPTS_LIST },
                 onCallClick = { phone, name ->
                     appScope.launch {
                         val user = try { SupabaseService.client.auth.currentUserOrNull() } catch (e: Exception) { null }
@@ -506,6 +511,28 @@ fun MainApp() {
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.ACCOUNT }
             )
+            
+            Screen.TRANSCRIPTS_LIST -> TranscriptsListScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.CALL_HISTORY },
+                onTranscriptClick = { path ->
+                    selectedTranscriptPath = path
+                    currentScreen = Screen.TRANSCRIPT_DETAIL
+                }
+            )
+            
+            Screen.TRANSCRIPT_DETAIL -> {
+                val path = selectedTranscriptPath
+                if (path != null) {
+                    TranscriptDetailScreen(
+                        modifier = Modifier.padding(innerPadding),
+                        filePath = path,
+                        onBack = { currentScreen = Screen.TRANSCRIPTS_LIST }
+                    )
+                } else {
+                    currentScreen = Screen.TRANSCRIPTS_LIST
+                }
+            }
 
             Screen.ERROR -> ErrorScreen(
                 modifier = Modifier.padding(innerPadding),

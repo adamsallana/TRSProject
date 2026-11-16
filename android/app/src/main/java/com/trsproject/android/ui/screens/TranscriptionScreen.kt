@@ -3,6 +3,7 @@ package com.trsproject.android.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -66,6 +67,10 @@ import io.github.jan.supabase.auth.auth
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // Data model for a caption line
 data class CaptionMessage(
@@ -93,6 +98,33 @@ internal fun mergeCaption(captions: List<CaptionMessage>, msg: CaptionMessage): 
     }
 }
 
+fun saveTranscriptionToFile(context: android.content.Context, contactName: String, captions: List<CaptionMessage>) {
+    try {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val safeName = contactName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val fileName = "Transcription_${safeName}_$timestamp.txt"
+        val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        
+        if (directory != null) {
+            if (!directory.exists()) {
+                directory.mkdirs()
+            }
+            val file = File(directory, fileName)
+            file.printWriter().use { out ->
+                out.println("Call Transcription with $contactName")
+                out.println("Date: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+                out.println("--------------------------------------------------")
+                for (caption in captions) {
+                    out.println("${caption.senderName}: ${caption.text}")
+                }
+            }
+            android.util.Log.d("TranscriptionScreen", "Transcription saved to ${file.absolutePath}")
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("TranscriptionScreen", "Failed to save transcription: ${e.message}")
+    }
+}
+
 @Composable
 fun TranscriptionScreen(
     modifier: Modifier = Modifier,
@@ -109,6 +141,14 @@ fun TranscriptionScreen(
     var captionPreferences by remember { mutableStateOf(initialCaptionPreferences ?: CaptionPreferences()) }
     var autoCaptionApplied by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
+    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
+    
+    // Prefer the contact name, then the phone number; never show a placeholder like "null"
+    val displayName = contactName?.takeIf { it.isNotBlank() && it != "null" }
+        ?: contactPhoneNumber?.takeIf { it.isNotBlank() }
+        ?: "Caller"
+
     LaunchedEffect(Unit) {
         if (initialCaptionPreferences == null) {
             try {
@@ -124,8 +164,16 @@ fun TranscriptionScreen(
     }
 
     var onCall by remember { mutableStateOf(true) }
+    var hasSavedTranscription by remember { mutableStateOf(false) }
+
     LaunchedEffect(onCall) {
-        if (!onCall) onCallEnded()
+        if (!onCall) {
+            onCallEnded()
+            if (!hasSavedTranscription && visibleCaptions.isNotEmpty()) {
+                saveTranscriptionToFile(context, displayName, visibleCaptions)
+                hasSavedTranscription = true
+            }
+        }
     }
     var isMuted by remember { mutableStateOf(false) }
 
@@ -143,14 +191,9 @@ fun TranscriptionScreen(
     var isEndingCall by remember { mutableStateOf(false) }
     var endCallError by remember { mutableStateOf<String?>(null) }
 
-    // Prefer the contact name, then the phone number; never show a placeholder like "null"
-    val displayName = contactName?.takeIf { it.isNotBlank() && it != "null" }
-        ?: contactPhoneNumber?.takeIf { it.isNotBlank() }
-        ?: "Caller"
     val callService = remember { CallService() }
     val coroutineScope = rememberCoroutineScope()
 
-    var visibleCaptions by remember { mutableStateOf(listOf<CaptionMessage>()) }
     val listState = rememberLazyListState()
     var webSocket by remember { mutableStateOf<okhttp3.WebSocket?>(null) }
     var captionsConnected by remember { mutableStateOf(true) }
@@ -217,7 +260,6 @@ fun TranscriptionScreen(
         }
     }
 
-    val context = LocalContext.current
     var hasMicPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(

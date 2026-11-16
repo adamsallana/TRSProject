@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -72,7 +73,8 @@ fun CallHistoryScreen(
     modifier: Modifier = Modifier,
     callService: CallService = remember { CallService() },
     onBack: () -> Unit = {},
-    onCallClick: (phoneNumber: String, contactName: String?) -> Unit = { _, _ -> }
+    onCallClick: (phoneNumber: String, contactName: String?) -> Unit = { _, _ -> },
+    onTranscriptsClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -229,6 +231,12 @@ fun CallHistoryScreen(
             TopAppBar(
                 title = { Text("Call History") },
                 actions = {
+                    IconButton(onClick = onTranscriptsClick) {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = "Saved Transcripts"
+                        )
+                    }
                     IconButton(onClick = { loadCallLogs(forceRefresh = true) }, enabled = !isRefreshing) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
