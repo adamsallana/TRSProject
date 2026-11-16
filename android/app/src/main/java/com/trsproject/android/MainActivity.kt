@@ -43,6 +43,7 @@ import com.trsproject.android.ui.screens.CallHistoryScreen
 import com.trsproject.android.ui.screens.CaptionSettingsScreen
 import com.trsproject.android.ui.screens.DialerScreen
 import com.trsproject.android.ui.screens.ErrorScreen
+import com.trsproject.android.ui.screens.TranscriptsScreen
 import com.trsproject.android.ui.screens.HomeScreen
 import com.trsproject.android.ui.screens.IncomingCallScreen
 import com.trsproject.android.ui.screens.NotificationsScreen
@@ -485,7 +486,8 @@ fun MainApp() {
                 onNavigateToCaptionSettings = { currentScreen = Screen.CAPTION_SETTINGS },
                 onNavigateToNotifications = { currentScreen = Screen.NOTIFICATIONS },
                 onNavigateToSecurity = { currentScreen = Screen.SECURITY_SETTINGS },
-                onNavigateToCallHistory = { currentScreen = Screen.CALL_HISTORY }
+                onNavigateToCallHistory = { currentScreen = Screen.CALL_HISTORY },
+                onNavigateToTranscripts = { currentScreen = Screen.TRANSCRIPTS }
             )
             Screen.PERSONAL_INFO -> PersonalInfoScreen(
                 modifier = Modifier.padding(innerPadding),
@@ -503,6 +505,10 @@ fun MainApp() {
                 onBack = { currentScreen = Screen.ACCOUNT }
             )
             Screen.SECURITY_SETTINGS -> SecuritySettingsScreen(
+                modifier = Modifier.padding(innerPadding),
+                onBack = { currentScreen = Screen.ACCOUNT }
+            )
+            Screen.TRANSCRIPTS -> TranscriptsScreen(
                 modifier = Modifier.padding(innerPadding),
                 onBack = { currentScreen = Screen.ACCOUNT }
             )

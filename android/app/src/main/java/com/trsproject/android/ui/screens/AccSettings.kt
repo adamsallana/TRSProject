@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
@@ -69,7 +70,8 @@ fun AccountScreen(
     onNavigateToCaptionSettings: () -> Unit = {},
     onNavigateToNotifications: () -> Unit = {},
     onNavigateToSecurity: () -> Unit = {},
-    onNavigateToCallHistory: () -> Unit = {}
+    onNavigateToCallHistory: () -> Unit = {},
+    onNavigateToTranscripts: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -240,6 +242,13 @@ fun AccountScreen(
                             title = "Security & Privacy",
                             subtitle = "Reset password",
                             onClick = onNavigateToSecurity
+                        )
+
+                        SettingsItem(
+                            icon = Icons.Default.Description,
+                            title = "Saved Transcripts",
+                            subtitle = "Download and view local call transcripts",
+                            onClick = onNavigateToTranscripts
                         )
                     }
                 }

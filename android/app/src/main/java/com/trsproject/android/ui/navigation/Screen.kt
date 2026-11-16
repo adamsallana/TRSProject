@@ -13,5 +13,6 @@ enum class Screen {
     NOTIFICATIONS,
     SECURITY_SETTINGS,
     CALL_HISTORY,
+    TRANSCRIPTS,
     ERROR
 }
